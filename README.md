@@ -1,18 +1,20 @@
 # Agents HQ
 
-Real-time dashboard for watching AI agent teams work. Built for Claude Code's multi-agent workflows - when you spawn a team of agents (researcher, coder, tester, etc.), this gives you a live view of what each one is doing.
+A dashboard that shows what your AI agents are doing while they work. You start a Claude Code team (researcher, coder, tester, whatever), and this gives you a live floor view of each agent - what tool they're running, what task they're on, when they go idle or finish.
 
-The dashboard picks up agent activity through Claude Code hooks. Agents appear on screen as they start, you see which tools they're using in real time, and they disappear when they finish. No config needed for new agents - they register themselves automatically.
+Agents register themselves when they first appear. You don't need to configure anything upfront.
 
 ## Views
 
-**HQ** - 3D isometric floor with agents as shaded spheres, grouped by department. Drag to orbit, scroll to zoom, alt+click to pan.
+The dashboard has four layouts you can switch between:
 
-**List** - Traditional table with status, current task, tool in use, and last active time.
+HQ is a 3D isometric floor with agents as shaded spheres, grouped by department. Drag to orbit, scroll to zoom, alt+click to pan.
 
-**Cards** - Grid of agent cards showing live status and task progress bars.
+List is a plain table - status, current task, tool, last active time.
 
-**Graph** - 3D network graph showing department clusters and inter-agent connections. Same orbit/zoom/pan controls as HQ.
+Cards is a grid layout with one card per agent showing live status and a task progress bar.
+
+Graph is a 3D network view with department clusters and connection lines between agents. Same orbit/zoom/pan as HQ.
 
 ## Setup
 
@@ -23,9 +25,9 @@ npm start
 
 Opens at `http://localhost:3000`.
 
-## Connecting to Claude Code
+## Hooking into Claude Code
 
-The project includes hooks that report agent activity to the dashboard. Copy the hooks config into your Claude Code project:
+Copy the hooks into your Claude Code project:
 
 ```bash
 # From your project directory
@@ -35,35 +37,36 @@ cp /path/to/agents-hq/.claude/hooks/agent-tracker.js .claude/hooks/
 cp /path/to/agents-hq/.claude/settings.json .claude/settings.json
 ```
 
-The hooks fire on four events:
-- **SubagentStart** - agent appears on dashboard as active
-- **SubagentStop** - agent goes offline
-- **PreToolUse** - shows which tool the agent is about to use
-- **PostToolUse** - clears the tool indicator
+Four hook events drive the dashboard:
 
-New agents register themselves automatically. If an agent type isn't in `config/agents.json`, the server assigns it a color and grid position and adds it to the SUBAGENT department.
+- SubagentStart - agent shows up as active
+- SubagentStop - agent goes offline
+- PreToolUse - updates which tool the agent is running
+- PostToolUse - clears the tool indicator
 
-Set `AGENTS_HQ_URL` if the dashboard runs somewhere other than `localhost:3000`:
+If an agent type isn't in `config/agents.json`, the server creates it on the fly with an auto-assigned color and grid position under the SUBAGENT department.
+
+Set `AGENTS_HQ_URL` if the dashboard isn't on localhost:
 
 ```bash
 export AGENTS_HQ_URL=http://192.168.1.50:3000
 ```
 
-## Testing without Claude Code
+## Try it without Claude Code
 
-Run the simulation script to populate the dashboard with fake agent activity:
+The simulation script populates the dashboard with fake activity:
 
 ```bash
 npm run simulate
 ```
 
-Or run the hook integration test, which simulates a realistic multi-agent session (research, implementation, testing, review):
+There's also a scripted multi-agent session that walks through research, implementation, testing, and review phases:
 
 ```bash
 bash scripts/test-hooks.sh
 ```
 
-There's also a manual status script:
+And a manual status updater:
 
 ```bash
 bash scripts/report-status.sh <agent-id> <status> [task] [tool]
@@ -72,7 +75,7 @@ bash scripts/report-status.sh ceo active "Reviewing strategy" "Read"
 
 ## API
 
-All state updates go through HTTP or file writes. The server watches `state/agents/` for changes and pushes updates to connected browsers via WebSocket.
+The server watches `state/agents/` for file changes and pushes updates to browsers over WebSocket. You can also hit the HTTP endpoints directly:
 
 ```
 GET  /api/config              # agent config (grows as new agents appear)
@@ -97,15 +100,13 @@ Status values: `active`, `idle`, `offline`.
 
 ## Themes
 
-10 built-in color themes, switchable from the header:
+10 color themes, switchable from the header: Matrix, Neon Abyss, Tokyo Drift, Arctic Frost, Velvet Dusk, Burnished Iron, Signal Red, One Dark, Dracula, Horizon.
 
-Matrix, Neon Abyss, Tokyo Drift, Arctic Frost, Velvet Dusk, Burnished Iron, Signal Red, One Dark, Dracula, Horizon
+## Agent config
 
-## Pre-configured agents
+`config/agents.json` defines the agents that show up at startup. Each one has an id, display name, abbreviation (the text inside the sphere), department, color, and grid position for the HQ floor.
 
-`config/agents.json` defines agents that appear on the dashboard at startup. Each agent has an id, display name, abbreviation (shown inside the sphere), department, color, and grid position for the HQ view.
-
-Departments: C-SUITE, OPERATIONS, CREATIVE, SUBAGENT (auto-assigned).
+Departments: C-SUITE, OPERATIONS, CREATIVE. Dynamically created agents go into SUBAGENT.
 
 ## Project structure
 
