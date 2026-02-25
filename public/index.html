@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agents HQ - Live</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="header">
+    <span class="title">AGENTS HQ - LIVE</span>
+    <div id="team-stats" class="team-stats">[ 0 ACTIVE | 0 IDLE | 0 OFFLINE | 0 TOTAL ]</div>
+    <div id="controls">
+      <div id="layout-switcher">
+        <button class="layout-btn active" data-layout="isometric">HQ</button>
+        <button class="layout-btn" data-layout="list">LIST</button>
+        <button class="layout-btn" data-layout="cards">CARDS</button>
+        <button class="layout-btn" data-layout="graph">GRAPH</button>
+      </div>
+      <div id="theme-switcher">
+        <button id="theme-btn"><span class="swatch"></span> THEME</button>
+        <div id="theme-dropdown">
+          <div class="theme-option active" data-theme="matrix"><span class="swatch" style="background:#3aff7f"></span> Matrix</div>
+          <div class="theme-option" data-theme="neon"><span class="swatch" style="background:#00e5ff"></span> Neon Abyss</div>
+          <div class="theme-option" data-theme="tokyo"><span class="swatch" style="background:#7aa2f7"></span> Tokyo Drift</div>
+          <div class="theme-option" data-theme="arctic"><span class="swatch" style="background:#88c0d0"></span> Arctic Frost</div>
+          <div class="theme-option" data-theme="velvet"><span class="swatch" style="background:#cba6f7"></span> Velvet Dusk</div>
+          <div class="theme-option" data-theme="iron"><span class="swatch" style="background:#fe8019"></span> Burnished Iron</div>
+          <div class="theme-option" data-theme="signal"><span class="swatch" style="background:#ff3333"></span> Signal Red</div>
+          <div class="theme-divider"></div>
+          <div class="theme-option" data-theme="onedark"><span class="swatch" style="background:#61afef"></span> One Dark</div>
+          <div class="theme-option" data-theme="dracula"><span class="swatch" style="background:#bd93f9"></span> Dracula</div>
+          <div class="theme-option" data-theme="horizon"><span class="swatch" style="background:#e95378"></span> Horizon</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="grid-area">
+      <!-- Isometric View (full 3D canvas) -->
+      <div id="view-isometric" class="view-container active">
+        <canvas id="iso-grid"></canvas>
+        <button id="iso-reset" class="iso-reset-btn" title="Reset view">RESET</button>
+      </div>
+
+      <!-- List View -->
+      <div id="view-list" class="view-container">
+        <div id="list-container">
+          <div class="list-header">
+            <span class="list-col col-status">STATUS</span>
+            <span class="list-col col-agent">AGENT</span>
+            <span class="list-col col-dept">DEPARTMENT</span>
+            <span class="list-col col-task">CURRENT TASK</span>
+            <span class="list-col col-tool">TOOL</span>
+            <span class="list-col col-time">LAST ACTIVE</span>
+          </div>
+          <div id="list-body"></div>
+        </div>
+      </div>
+
+      <!-- Cards View -->
+      <div id="view-cards" class="view-container">
+        <div id="cards-container"></div>
+      </div>
+
+      <!-- Graph View -->
+      <div id="view-graph" class="view-container">
+        <canvas id="graph-canvas"></canvas>
+        <button id="graph-reset" class="iso-reset-btn" title="Reset view">RESET</button>
+      </div>
+    </div>
+
+    <div id="sidebar">
+      <!-- Global activity log (default) -->
+      <div id="sidebar-global" class="sidebar-panel active">
+        <div class="sidebar-title">ACTIVITY LOG</div>
+        <div id="activity-log"></div>
+      </div>
+
+      <!-- Agent detail panel (shown on click) -->
+      <div id="sidebar-agent" class="sidebar-panel">
+        <div class="sidebar-title">
+          <button id="agent-detail-back" class="detail-back-btn">&larr;</button>
+          <span id="agent-detail-title">AGENT</span>
+        </div>
+        <div id="agent-detail-content">
+          <div id="agent-detail-header"></div>
+          <div class="detail-section">
+            <div class="detail-section-title">CURRENT STATUS</div>
+            <div id="agent-detail-status"></div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-section-title">TOOL USAGE</div>
+            <div id="agent-detail-tools"></div>
+          </div>
+          <div class="detail-section">
+            <div class="detail-section-title">EVENT LOG</div>
+            <div id="agent-detail-log"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

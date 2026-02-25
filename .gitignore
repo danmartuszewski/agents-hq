@@ -1,0 +1,4 @@
+node_modules/
+state/agents/*.json
+.idea/
+.DS_Store
