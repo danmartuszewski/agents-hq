@@ -160,7 +160,10 @@ function applyTheme(name, skipRender) {
   });
 
   // Re-render canvas-based views (they read colors from CSS vars)
-  if (!skipRender) renderCurrentLayout();
+  if (!skipRender) {
+    renderCurrentLayout();
+    if (selectedAgentId) renderAgentDetail();
+  }
 }
 
 document.getElementById('theme-btn').addEventListener('click', (e) => {
@@ -245,6 +248,57 @@ if (Notification.permission === 'default') {
 // ============================================================
 const activityLogEl = document.getElementById('activity-log');
 const teamStatsEl = document.getElementById('team-stats');
+
+// ============================================================
+// Sidebar resize
+// ============================================================
+(function initSidebarResize() {
+  const handle = document.getElementById('sidebar-resize-handle');
+  const sidebar = document.getElementById('sidebar');
+  if (!handle || !sidebar) return;
+
+  // Restore saved width
+  const saved = localStorage.getItem('agents-hq-sidebar-width');
+  if (saved) sidebar.style.width = saved + 'px';
+
+  let dragging = false;
+
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const mainRect = document.getElementById('main').getBoundingClientRect();
+    const newWidth = mainRect.right - e.clientX;
+    const clamped = Math.max(200, Math.min(700, newWidth));
+    sidebar.style.width = clamped + 'px';
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem('agents-hq-sidebar-width', parseInt(sidebar.style.width));
+    renderCurrentLayout();
+  });
+})();
+
+// ============================================================
+// Clickable agent names in activity log
+// ============================================================
+activityLogEl.addEventListener('click', (e) => {
+  const ref = e.target.closest('.agent-ref');
+  if (!ref) return;
+  const agentId = ref.dataset.agentId;
+  if (agentId) openAgentDetail(agentId);
+});
 
 // ============================================================
 // Layout Switcher
@@ -911,7 +965,7 @@ function renderList() {
 
       const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
       const taskText = state.currentTask || '\u2014';
-      const toolHtml = state.currentTool ? `<span class="tool-badge">${state.currentTool}</span>` : '\u2014';
+      const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '\u2014';
       const displayName = getDisplayName(agent);
 
       row.innerHTML = `
@@ -938,7 +992,7 @@ function updateList(agentId) {
 
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
   const taskText = state.currentTask || '\u2014';
-  const toolHtml = state.currentTool ? `<span class="tool-badge">${state.currentTool}</span>` : '\u2014';
+  const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '\u2014';
   const displayName = getDisplayName(agent);
 
   row.innerHTML = `
@@ -1012,13 +1066,13 @@ function createCard(agent, state) {
 
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
   const taskText = state.currentTask || 'No active task';
-  const toolHtml = state.currentTool ? `<span class="card-tool">${state.currentTool}</span>` : '';
+  const toolHtml = state.currentTool ? `<span class="card-tool" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '';
   const statusLabel = state.status.toUpperCase();
   const displayName = getDisplayName(agent);
 
   card.innerHTML = `
     <div class="card-header">
-      <div class="card-orb" style="background: ${agent.color}">${agent.abbreviation}</div>
+      <div class="card-orb">${agent.abbreviation}</div>
       <div class="card-info">
         <div class="card-name">${displayName}</div>
         <div class="card-dept">${agent.agentType}</div>
@@ -1571,7 +1625,7 @@ function renderAgentDetail() {
   // Header
   const isActive = state.status === 'active';
   document.getElementById('agent-detail-header').innerHTML = `
-    <div class="detail-orb ${isActive ? 'glow' : ''}" style="background: ${agent.color}; --c: ${agent.color}">${agent.abbreviation}</div>
+    <div class="detail-orb ${isActive ? 'glow' : ''}" style="--c: ${agent.color}">${agent.abbreviation}</div>
     <div class="detail-agent-info">
       <div class="detail-agent-name">${displayName}</div>
       <div class="detail-agent-dept">${agent.project}</div>
@@ -1637,10 +1691,10 @@ function renderAgentDetail() {
     document.getElementById('agent-detail-tools').innerHTML = toolEntries.map(([name, count]) => {
       const durs = durations[name] || [];
       const avgMs = durs.length > 0 ? Math.round(durs.reduce((s, v) => s + v, 0) / durs.length) : null;
-      const avgLabel = avgMs !== null ? `<span class="detail-tool-avg">avg ${avgMs}ms</span>` : '';
+      const avgLabel = `<span class="detail-tool-avg">${avgMs !== null ? 'avg ' + avgMs + 'ms' : ''}</span>`;
       return `
         <div class="detail-tool-bar">
-          <span class="detail-tool-name">${name}</span>
+          <span class="detail-tool-name" title="${name}">${shortToolName(name)}</span>
           <div class="detail-tool-track"><div class="detail-tool-fill" style="width: ${(count / maxCount) * 100}%"></div></div>
           <span class="detail-tool-count">${count}</span>
           ${avgLabel}
@@ -1733,6 +1787,22 @@ function attachAgentClick(el, agentId) {
 // ============================================================
 // Shared utilities
 // ============================================================
+function shortToolName(name) {
+  if (!name) return '';
+  // mcp__claude-in-chrome__computer -> chrome:computer
+  // mcp__some-server__do_thing -> some-server:do_thing
+  if (name.startsWith('mcp__')) {
+    const parts = name.slice(5).split('__');
+    if (parts.length >= 2) {
+      // Shorten known long server prefixes
+      let server = parts[0].replace(/^claude-in-/, '');
+      return server + ':' + parts.slice(1).join('__');
+    }
+    return parts[0];
+  }
+  return name;
+}
+
 function parseColorToRgb(color) {
   color = color.trim();
   // Hex: #rrggbb
@@ -1758,8 +1828,8 @@ function addLogEntry(agentId, oldStatus, newStatus, tool) {
   const agent = getAgentById(agentId);
   const agentName = agent ? getDisplayName(agent) : `@${agentId}`;
 
-  let text = `<span class="time">${timeStr}</span> <span class="marker">[*]</span> <span class="agent-ref">${agentName}</span> <span class="transition">${oldStatus.toUpperCase()} > ${newStatus.toUpperCase()}</span>`;
-  if (tool) text += ` <span class="tool-name">${tool}</span>`;
+  let text = `<span class="time">${timeStr}</span> <span class="marker">[*]</span> <span class="agent-ref" data-agent-id="${agentId}">${agentName}</span> <span class="transition">${oldStatus.toUpperCase()} > ${newStatus.toUpperCase()}</span>`;
+  if (tool) text += ` <span class="tool-name" title="${tool}">${shortToolName(tool)}</span>`;
 
   const entry = document.createElement('div');
   entry.className = 'log-entry';
@@ -1780,7 +1850,7 @@ function addMessageLogEntry(msg) {
 
   const entry = document.createElement('div');
   entry.className = 'log-entry log-message';
-  entry.innerHTML = `<span class="time">${timeStr}</span> <span class="msg-marker">${icon}</span> <span class="agent-ref">${fromName}</span> <span class="msg-arrow">\u2192</span> <span class="msg-recipient">${toName}</span> <span class="msg-preview">${preview}</span>`;
+  entry.innerHTML = `<span class="time">${timeStr}</span> <span class="msg-marker">${icon}</span> <span class="agent-ref" data-agent-id="${msg.fromId}">${fromName}</span> <span class="msg-arrow">\u2192</span> <span class="msg-recipient">${toName}</span> <span class="msg-preview">${preview}</span>`;
   activityLogEl.insertBefore(entry, activityLogEl.firstChild);
   while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
 }
@@ -1855,6 +1925,54 @@ function connect() {
     if (msg.type === 'init') {
       agentRegistry = msg.config;
       agentStates = msg.states;
+
+      // Restore persisted per-agent event logs and tool counts
+      agentLogs = {};
+      agentToolCounts = {};
+      for (const [id, state] of Object.entries(agentStates)) {
+        if (state.eventLog && state.eventLog.length > 0) {
+          agentLogs[id] = state.eventLog.map(e => ({
+            timeStr: e.time ? new Date(e.time).toLocaleTimeString() : '0s',
+            oldStatus: e.oldStatus || 'offline',
+            newStatus: e.newStatus || 'offline',
+            tool: e.tool || null,
+            task: e.task || null
+          })).reverse();
+        }
+        if (state.toolCounts) {
+          agentToolCounts[id] = { ...state.toolCounts };
+        }
+      }
+
+      // Restore persisted global activity log
+      activityLogEl.innerHTML = '';
+      if (msg.activityLog && msg.activityLog.length > 0) {
+        const recent = msg.activityLog.slice(-50);
+        for (const entry of recent) {
+          if (entry.type === 'transcript') {
+            const agentInfo = getAgentById(entry.agentId);
+            const name = agentInfo ? getDisplayName(agentInfo) : (entry.agentId || '').substring(0, 8);
+            const el = document.createElement('div');
+            el.className = 'log-entry';
+            el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[T]</span> <span class="agent-ref" data-agent-id="${entry.agentId}">${name}</span> <span class="transition">${entry.toolCount} tools from transcript</span>`;
+            activityLogEl.appendChild(el);
+          } else {
+            const agentInfo = getAgentById(entry.agentId);
+            const name = agentInfo ? getDisplayName(agentInfo) : `@${(entry.agentId || '').substring(0, 8)}`;
+            const el = document.createElement('div');
+            el.className = 'log-entry';
+            let text = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[*]</span> <span class="agent-ref" data-agent-id="${entry.agentId}">${name}</span> <span class="transition">${(entry.oldStatus || '').toUpperCase()} > ${(entry.newStatus || '').toUpperCase()}</span>`;
+            if (entry.tool) text += ` <span class="tool-name" title="${entry.tool}">${shortToolName(entry.tool)}</span>`;
+            el.innerHTML = text;
+            activityLogEl.appendChild(el);
+          }
+        }
+        // Reverse so newest is first
+        const children = Array.from(activityLogEl.children);
+        activityLogEl.innerHTML = '';
+        children.reverse().forEach(c => activityLogEl.appendChild(c));
+      }
+
       invalidateLayout();
       renderCurrentLayout();
       updateStats();
@@ -1878,6 +1996,55 @@ function connect() {
       if (agentMessages.length > 200) agentMessages.shift();
       addMessageLogEntry(msg.message);
       queueMessageAnimation(msg.message.fromId, msg.message.toId);
+    }
+
+    // Retroactive subagent tool history from transcript parsing
+    if (msg.type === 'subagent_tools') {
+      const agentId = msg.agentId;
+      const tools = msg.tools || [];
+      if (!agentToolCounts[agentId]) agentToolCounts[agentId] = {};
+      if (!agentToolTimeline[agentId]) agentToolTimeline[agentId] = [];
+      if (!agentLogs[agentId]) agentLogs[agentId] = [];
+
+      for (const entry of tools) {
+        const tool = entry.tool;
+        const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : Date.now();
+
+        // Tool counts
+        agentToolCounts[agentId][tool] = (agentToolCounts[agentId][tool] || 0) + 1;
+
+        // Timeline for sparklines
+        agentToolTimeline[agentId].push({ time: ts, tool });
+
+        // Event log
+        agentLogs[agentId].push({
+          timeStr: new Date(ts).toLocaleTimeString(),
+          oldStatus: 'active',
+          newStatus: 'active',
+          tool,
+          task: entry.detail ? entry.detail.summary : ''
+        });
+      }
+
+      // Sort timeline by time
+      agentToolTimeline[agentId].sort((a, b) => a.time - b.time);
+      // Reverse logs so newest first
+      agentLogs[agentId].sort((a, b) => 0); // keep insertion order, newest last from transcript
+      agentLogs[agentId].reverse();
+      if (agentLogs[agentId].length > 100) agentLogs[agentId].length = 100;
+
+      // Add a summary log entry to global activity log
+      const agentInfo = getAgentById(agentId);
+      const name = agentInfo ? getDisplayName(agentInfo) : agentId.substring(0, 8);
+      const timeStr = `${Math.floor((Date.now() - (window._startTime || Date.now())) / 1000)}s`;
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.innerHTML = `<span class="time">${timeStr}</span> <span class="marker">[T]</span> <span class="agent-ref" data-agent-id="${agentId}">${name}</span> <span class="transition">${tools.length} tools from transcript</span>`;
+      activityLogEl.insertBefore(entry, activityLogEl.firstChild);
+      while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
+
+      if (selectedAgentId === agentId) renderAgentDetail();
+      updateStats();
     }
 
     if (msg.type === 'update') {

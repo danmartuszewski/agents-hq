@@ -1113,10 +1113,14 @@ body {
   color: #fff;
   letter-spacing: 1px;
   flex-shrink: 0;
+  background:
+    radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--agent-color), white 40%) 0%, var(--agent-color) 25%, color-mix(in srgb, var(--agent-color), black 50%) 75%, color-mix(in srgb, var(--agent-color), black 75%) 100%) !important;
+  box-shadow: inset 0 -2px 4px rgba(0,0,0,0.25), 0 2px 6px rgba(0,0,0,0.3);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
 }
 
 .agent-card.active .card-orb {
-  box-shadow: 0 0 15px var(--agent-color), 0 0 30px color-mix(in srgb, var(--agent-color) 40%, transparent);
+  box-shadow: inset 0 -2px 4px rgba(0,0,0,0.25), 0 0 15px var(--agent-color), 0 0 30px color-mix(in srgb, var(--agent-color) 40%, transparent);
 }
 
 .card-info {
@@ -1200,8 +1204,23 @@ body {
 }
 
 /* ---- Sidebar ---- */
+#sidebar-resize-handle {
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+#sidebar-resize-handle:hover,
+#sidebar-resize-handle.dragging {
+  background: var(--accent);
+}
+
 #sidebar {
   width: 340px;
+  min-width: 200px;
+  max-width: 700px;
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -1269,7 +1288,14 @@ body {
 
 .log-entry .time { color: var(--text-faint); }
 .log-entry .marker { color: var(--accent); }
-.log-entry .agent-ref { color: var(--text-content); }
+.log-entry .agent-ref {
+  color: var(--text-content);
+  cursor: pointer;
+}
+.log-entry .agent-ref:hover {
+  text-decoration: underline;
+  color: var(--accent);
+}
 .log-entry .transition { color: var(--text-dim); }
 .log-entry .tool-name { color: var(--tool-accent); }
 
@@ -1304,10 +1330,14 @@ body {
   color: #fff;
   letter-spacing: 1px;
   flex-shrink: 0;
+  background:
+    radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--c), white 40%) 0%, var(--c) 25%, color-mix(in srgb, var(--c), black 50%) 75%, color-mix(in srgb, var(--c), black 75%) 100%) !important;
+  box-shadow: inset 0 -2px 4px rgba(0,0,0,0.25), 0 2px 6px rgba(0,0,0,0.3);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
 }
 
 .detail-orb.glow {
-  box-shadow: 0 0 15px var(--c), 0 0 30px color-mix(in srgb, var(--c) 40%, transparent);
+  box-shadow: inset 0 -2px 4px rgba(0,0,0,0.25), 0 0 15px var(--c), 0 0 30px color-mix(in srgb, var(--c) 40%, transparent);
 }
 
 .detail-agent-info { flex: 1; }
@@ -1357,10 +1387,10 @@ body {
 .detail-stat-value.task { font-size: 10px; color: var(--text-muted); line-height: 1.4; }
 
 .detail-tool-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.detail-tool-name { font-size: 11px; color: var(--text-content); width: 80px; flex-shrink: 0; }
+.detail-tool-name { font-size: 11px; color: var(--text-content); width: 130px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-tool-track { flex: 1; height: 6px; background: var(--border-faintest); border-radius: 3px; overflow: hidden; }
 .detail-tool-fill { height: 100%; border-radius: 3px; background: var(--tool-accent); transition: width 0.3s; }
-.detail-tool-count { font-size: 10px; color: var(--text-dim); width: 24px; text-align: right; }
+.detail-tool-count { font-size: 10px; color: var(--text-dim); min-width: 28px; text-align: right; flex-shrink: 0; }
 
 .detail-log-entry {
   padding: 6px 0;
@@ -1515,8 +1545,11 @@ body {
 .detail-tool-avg {
   font-size: 9px;
   color: var(--text-dim);
-  margin-left: 4px;
+  margin-left: 2px;
   white-space: nowrap;
+  width: 72px;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 /* ============================================================

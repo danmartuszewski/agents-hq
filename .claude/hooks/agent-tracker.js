@@ -6,9 +6,45 @@
 // Main sessions use session_id as identity and "lead" as type.
 
 const http = require('http');
+const fs = require('fs');
+const readline = require('readline');
 
-const DASHBOARD_URL = process.env.AGENTS_HQ_URL || 'http://localhost:3000';
+const DASHBOARD_URL = process.env.AGENTS_HQ_URL || 'http://localhost:3141';
 const HOOK_EVENT = process.argv[2] || '';
+
+function parseTranscriptTools(transcriptPath) {
+  return new Promise((resolve) => {
+    const tools = [];
+    if (!transcriptPath) return resolve(tools);
+    // Expand ~ to home dir
+    const resolved = transcriptPath.replace(/^~/, process.env.HOME || '');
+    let stream;
+    try {
+      stream = fs.createReadStream(resolved, { encoding: 'utf8' });
+    } catch {
+      return resolve(tools);
+    }
+    stream.on('error', () => resolve(tools));
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    rl.on('line', (line) => {
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type !== 'assistant') return;
+        const content = (obj.message && obj.message.content) || [];
+        for (const block of content) {
+          if (block.type !== 'tool_use') continue;
+          const detail = extractToolDetail(block.name, block.input || {});
+          tools.push({
+            tool: block.name,
+            timestamp: obj.timestamp || null,
+            detail
+          });
+        }
+      } catch {}
+    });
+    rl.on('close', () => resolve(tools));
+  });
+}
 
 function extractToolDetail(toolName, toolInput) {
   if (!toolName) return { summary: '', meta: {} };
@@ -114,10 +150,27 @@ process.stdin.on('end', () => {
   const toolName = data.tool_name || '';
   const toolInput = data.tool_input || {};
   const lastMsg = (data.last_assistant_message || '').substring(0, 200);
+  const transcriptPath = data.agent_transcript_path || '';
 
   if (!agentId) process.exit(0);
 
   const safeId = encodeURIComponent(agentId);
+
+  function sendBody(body) {
+    const url = new URL(`/api/agent/${safeId}/status`, DASHBOARD_URL);
+    const payload = JSON.stringify(body);
+    const req = http.request(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    });
+    req.on('error', () => {});
+    req.write(payload);
+    req.end(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000);
+  }
 
   let body;
 
@@ -133,19 +186,25 @@ process.stdin.on('end', () => {
         hookEvent: 'SubagentStart'
       };
       if (agentType) body.agentType = agentType;
+      sendBody(body);
       break;
 
     case 'SubagentStop':
-      body = {
-        status: 'offline',
-        currentTask: null,
-        currentTool: null,
-        lastMessage: lastMsg,
-        cwd,
-        sessionId,
-        hookEvent: 'SubagentStop'
-      };
-      if (agentType) body.agentType = agentType;
+      // Parse transcript for tool history before sending offline
+      parseTranscriptTools(transcriptPath).then((tools) => {
+        body = {
+          status: 'offline',
+          currentTask: null,
+          currentTool: null,
+          lastMessage: lastMsg,
+          cwd,
+          sessionId,
+          hookEvent: 'SubagentStop'
+        };
+        if (agentType) body.agentType = agentType;
+        if (tools.length > 0) body.transcriptTools = tools;
+        sendBody(body);
+      });
       break;
 
     case 'PreToolUse': {
@@ -160,6 +219,7 @@ process.stdin.on('end', () => {
         sessionId
       };
       if (agentType) body.agentType = agentType;
+      sendBody(body);
       break;
     }
 
@@ -173,26 +233,10 @@ process.stdin.on('end', () => {
         sessionId
       };
       if (agentType) body.agentType = agentType;
+      sendBody(body);
       break;
 
     default:
       process.exit(0);
   }
-
-  const url = new URL(`/api/agent/${safeId}/status`, DASHBOARD_URL);
-  const payload = JSON.stringify(body);
-
-  const req = http.request(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(payload)
-    }
-  });
-
-  req.on('error', () => {});
-  req.write(payload);
-  req.end(() => process.exit(0));
-
-  setTimeout(() => process.exit(0), 2000);
 });

@@ -1,4 +1,5 @@
 node_modules/
 state/agents/*.json
+state/activity-log.json
 .idea/
 .DS_Store
