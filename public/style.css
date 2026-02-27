@@ -560,6 +560,72 @@ body {
   font-weight: 700;
 }
 
+/* ---- Cleanup Switcher ---- */
+#cleanup-switcher {
+  position: relative;
+}
+
+#cleanup-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--accent-dim);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  padding: 7px 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+#cleanup-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+#cleanup-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 1000;
+  min-width: 220px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+#cleanup-dropdown.open {
+  display: block;
+}
+
+.cleanup-option {
+  padding: 7px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.cleanup-option:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.cleanup-option.danger {
+  color: #ff6b6b;
+}
+
+.cleanup-option.danger:hover {
+  background: rgba(255, 107, 107, 0.1);
+  color: #ff4444;
+}
+
 /* ---- Theme Switcher ---- */
 #theme-switcher {
   position: relative;
@@ -887,7 +953,7 @@ body {
 
 .col-status { width: 70px; }
 .col-agent { width: 140px; }
-.col-dept { width: 130px; }
+.col-type { width: 130px; }
 .col-task { flex: 1; min-width: 200px; }
 .col-tool { width: 100px; }
 .col-time { width: 100px; text-align: right; }
@@ -1309,6 +1375,62 @@ body {
 .detail-log-entry .dl-tool { color: var(--tool-accent); }
 .detail-log-entry .dl-task { color: var(--text-muted); font-style: italic; }
 .detail-no-logs { font-size: 11px; color: var(--text-dead); font-style: italic; }
+
+/* ---- Project Headers ---- */
+.list-project-header {
+  padding: 12px 16px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 3px;
+  border-bottom: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+.list-project-header:first-child {
+  margin-top: 0;
+}
+
+.cards-project-header {
+  grid-column: 1 / -1;
+  padding: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 3px;
+  border-bottom: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+.cards-project-header:first-child {
+  margin-top: 0;
+}
+
+/* ---- Empty State ---- */
+.list-empty-state,
+.cards-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  font-size: 14px;
+  letter-spacing: 2px;
+}
+
+/* ---- Stats Projects ---- */
+.team-stats .stat-projects { color: var(--accent); }
+
+/* ---- Detail CWD ---- */
+.detail-agent-cwd {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
 
 /* ---- Scrollbars ---- */
 #list-container::-webkit-scrollbar,

@@ -2,18 +2,25 @@ const fs = require('fs');
 const path = require('path');
 
 const STATE_DIR = path.join(__dirname, '..', 'state', 'agents');
-const CONFIG_PATH = path.join(__dirname, '..', 'config', 'agents.json');
+fs.mkdirSync(STATE_DIR, { recursive: true });
 
-const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+// Simulated agents across two projects
+const agents = [
+  { agentId: 'sim-ceo',     agentType: 'lead',       project: 'my-api',       cwd: '/projects/my-api' },
+  { agentId: 'sim-cto',     agentType: 'lead',       project: 'frontend-app', cwd: '/projects/frontend-app' },
+  { agentId: 'sim-res-1',   agentType: 'researcher', project: 'my-api',       cwd: '/projects/my-api' },
+  { agentId: 'sim-coder-1', agentType: 'coder',      project: 'my-api',       cwd: '/projects/my-api' },
+  { agentId: 'sim-coder-2', agentType: 'coder',      project: 'frontend-app', cwd: '/projects/frontend-app' },
+  { agentId: 'sim-test-1',  agentType: 'tester',     project: 'my-api',       cwd: '/projects/my-api' },
+  { agentId: 'sim-rev-1',   agentType: 'reviewer',   project: 'my-api',       cwd: '/projects/my-api' },
+];
 
 const tasks = {
-  ceo: ['Reviewing quarterly strategy', 'Analyzing market trends', 'Planning team expansion', 'Reading competitive intelligence'],
-  cto: ['Reviewing architecture docs', 'Code review PR #142', 'Planning infrastructure migration', 'Evaluating new tools'],
-  pmnet: ['Updating project roadmap', 'Sprint planning', 'Stakeholder sync', 'Writing release notes'],
-  ghost: ['Running background tasks', 'Monitoring system health', 'Cleaning up logs', 'Syncing data'],
-  crm: ['Updating customer records', 'Generating sales report', 'Sending follow-up emails', 'Analyzing churn data'],
-  ads: ['Optimizing ad campaigns', 'A/B test analysis', 'Budget allocation', 'Creating ad copy'],
-  content: ['Writing blog post', 'Editing newsletter', 'Creating social media posts', 'Reviewing content calendar']
+  lead:       ['Reviewing quarterly strategy', 'Analyzing market trends', 'Planning team expansion', 'Reading competitive intelligence'],
+  researcher: ['Searching documentation', 'Reading source code', 'Comparing libraries', 'Analyzing patterns'],
+  coder:      ['Writing auth middleware', 'Editing route handler', 'Refactoring models', 'Writing tests'],
+  tester:     ['Running test suite', 'Checking coverage', 'Re-running failed tests', 'Validating edge cases'],
+  reviewer:   ['Reading PR diff', 'Checking security patterns', 'Reviewing test coverage', 'Final review'],
 };
 
 const tools = ['Read', 'Write', 'Bash', 'Grep', 'Edit', 'WebSearch', null, null, null];
@@ -22,10 +29,14 @@ function randomChoice(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function updateAgent(agentId, status, task, tool) {
-  const filePath = path.join(STATE_DIR, `${agentId}.json`);
+function updateAgent(agent, status, task, tool) {
+  const filePath = path.join(STATE_DIR, `${agent.agentId}.json`);
   const data = {
-    id: agentId,
+    agentId: agent.agentId,
+    agentType: agent.agentType,
+    project: agent.project,
+    cwd: agent.cwd,
+    sessionId: 'sim-session',
     status,
     currentTask: task || null,
     currentTool: tool || null,
@@ -35,8 +46,8 @@ function updateAgent(agentId, status, task, tool) {
 }
 
 // Initialize all agents as offline
-for (const agent of config) {
-  updateAgent(agent.id, 'offline', null, null);
+for (const agent of agents) {
+  updateAgent(agent, 'offline', null, null);
 }
 
 console.log('Simulator started. Agents will come alive in waves...');
@@ -45,68 +56,64 @@ console.log('Press Ctrl+C to stop.\n');
 // Phase 1: Bring agents online one by one
 let agentIndex = 0;
 const bootInterval = setInterval(() => {
-  if (agentIndex >= config.length) {
+  if (agentIndex >= agents.length) {
     clearInterval(bootInterval);
     console.log('All agents online. Running simulation loop...\n');
     startSimLoop();
     return;
   }
 
-  const agent = config[agentIndex];
-  const task = randomChoice(tasks[agent.id] || ['Working...']);
+  const agent = agents[agentIndex];
+  const task = randomChoice(tasks[agent.agentType] || ['Working...']);
   const tool = randomChoice(tools);
-  updateAgent(agent.id, 'active', task, tool);
-  console.log(`  [+] ${agent.name} is now ACTIVE — ${task}`);
+  updateAgent(agent, 'active', task, tool);
+  console.log(`  [+] @${agent.agentType} (${agent.project}) is now ACTIVE — ${task}`);
   agentIndex++;
 }, 1500);
 
 function startSimLoop() {
   setInterval(() => {
-    const agent = randomChoice(config);
+    const agent = randomChoice(agents);
     const currentState = (() => {
       try {
-        return JSON.parse(fs.readFileSync(path.join(STATE_DIR, `${agent.id}.json`), 'utf8'));
+        return JSON.parse(fs.readFileSync(path.join(STATE_DIR, `${agent.agentId}.json`), 'utf8'));
       } catch {
         return { status: 'offline' };
       }
     })();
 
-    // Transition logic
     let newStatus, newTask, newTool;
     if (currentState.status === 'active') {
-      // Active agents might go idle or switch tasks
       if (Math.random() < 0.3) {
         newStatus = 'idle';
         newTask = null;
         newTool = null;
-        console.log(`  [~] ${agent.name} is now IDLE`);
+        console.log(`  [~] @${agent.agentType} (${agent.project}) is now IDLE`);
       } else {
         newStatus = 'active';
-        newTask = randomChoice(tasks[agent.id] || ['Working...']);
+        newTask = randomChoice(tasks[agent.agentType] || ['Working...']);
         newTool = randomChoice(tools);
-        console.log(`  [*] ${agent.name} switched task — ${newTask}${newTool ? ` (${newTool})` : ''}`);
+        console.log(`  [*] @${agent.agentType} (${agent.project}) switched task — ${newTask}${newTool ? ` (${newTool})` : ''}`);
       }
     } else if (currentState.status === 'idle') {
-      // Idle agents usually come back active
       if (Math.random() < 0.8) {
         newStatus = 'active';
-        newTask = randomChoice(tasks[agent.id] || ['Working...']);
+        newTask = randomChoice(tasks[agent.agentType] || ['Working...']);
         newTool = randomChoice(tools);
-        console.log(`  [+] ${agent.name} is now ACTIVE — ${newTask}`);
+        console.log(`  [+] @${agent.agentType} (${agent.project}) is now ACTIVE — ${newTask}`);
       } else {
         newStatus = 'offline';
         newTask = null;
         newTool = null;
-        console.log(`  [-] ${agent.name} went OFFLINE`);
+        console.log(`  [-] @${agent.agentType} (${agent.project}) went OFFLINE`);
       }
     } else {
-      // Offline agents come back
       newStatus = 'active';
-      newTask = randomChoice(tasks[agent.id] || ['Working...']);
+      newTask = randomChoice(tasks[agent.agentType] || ['Working...']);
       newTool = randomChoice(tools);
-      console.log(`  [+] ${agent.name} is now ACTIVE — ${newTask}`);
+      console.log(`  [+] @${agent.agentType} (${agent.project}) is now ACTIVE — ${newTask}`);
     }
 
-    updateAgent(agent.id, newStatus, newTask, newTool);
+    updateAgent(agent, newStatus, newTask, newTool);
   }, 2000 + Math.random() * 3000);
 }

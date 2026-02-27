@@ -11,6 +11,15 @@
     <span class="title">AGENTS HQ - LIVE</span>
     <div id="team-stats" class="team-stats">[ 0 ACTIVE | 0 IDLE | 0 OFFLINE | 0 TOTAL ]</div>
     <div id="controls">
+      <div id="cleanup-switcher">
+        <button id="cleanup-btn">CLEAN</button>
+        <div id="cleanup-dropdown">
+          <div class="cleanup-option" data-action="offline-agents">Remove offline agents</div>
+          <div class="cleanup-option" data-action="offline-projects">Remove inactive projects</div>
+          <div class="theme-divider"></div>
+          <div class="cleanup-option danger" data-action="reset-all">Remove everything</div>
+        </div>
+      </div>
       <div id="layout-switcher">
         <button class="layout-btn active" data-layout="isometric">HQ</button>
         <button class="layout-btn" data-layout="list">LIST</button>
@@ -50,7 +59,7 @@
           <div class="list-header">
             <span class="list-col col-status">STATUS</span>
             <span class="list-col col-agent">AGENT</span>
-            <span class="list-col col-dept">DEPARTMENT</span>
+            <span class="list-col col-type">TYPE</span>
             <span class="list-col col-task">CURRENT TASK</span>
             <span class="list-col col-tool">TOOL</span>
             <span class="list-col col-time">LAST ACTIVE</span>

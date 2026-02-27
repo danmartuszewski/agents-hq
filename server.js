@@ -10,62 +10,74 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 const STATE_DIR = path.join(__dirname, 'state', 'agents');
-const CONFIG_PATH = path.join(__dirname, 'config', 'agents.json');
 
-// Dynamic config: starts from file, grows as new agents appear
-let dynamicConfig = [];
+// Agent registry: keyed by agentId, grows as agents report in
+let agentRegistry = {};
 
-// Color palette for dynamically registered agents
-const DYNAMIC_COLORS = [
+// Consistent color per agent type
+const typeColorMap = {};
+const TYPE_COLORS = [
   '#f5a623', '#4a90d9', '#50e3c2', '#7b68ee', '#ff6b6b',
   '#4cd964', '#b8b8b8', '#e6a8d7', '#ff9f43', '#00d2d3',
   '#6c5ce7', '#fd79a8', '#00cec9', '#e17055', '#74b9ff'
 ];
-let colorIndex = 0;
+let typeColorIndex = 0;
 
-function loadConfig() {
-  try {
-    dynamicConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  } catch {
-    dynamicConfig = [];
+function getColorForType(agentType) {
+  if (!typeColorMap[agentType]) {
+    typeColorMap[agentType] = TYPE_COLORS[typeColorIndex % TYPE_COLORS.length];
+    typeColorIndex++;
   }
+  return typeColorMap[agentType];
 }
 
-function getOrCreateAgent(id, agentType) {
-  let agent = dynamicConfig.find(a => a.id === id);
-  if (agent) return { agent, isNew: false };
+function extractProjectName(cwd) {
+  if (!cwd) return 'unknown';
+  return path.basename(cwd) || 'unknown';
+}
 
-  // Auto-register new agent
-  const name = agentType || id;
-  const abbreviation = name.substring(0, 3).toUpperCase();
-  const color = DYNAMIC_COLORS[colorIndex % DYNAMIC_COLORS.length];
-  colorIndex++;
+function getOrCreateAgent(agentId, agentType, cwd, sessionId) {
+  let agent = agentRegistry[agentId];
+  const project = extractProjectName(cwd);
+  const color = getColorForType(agentType);
+  const abbreviation = agentType.substring(0, 3).toUpperCase();
 
-  // Assign grid position based on count
-  const existing = dynamicConfig.length;
-  const row = Math.floor(existing / 4);
-  const col = (existing % 4) * 3 + 2;
+  if (agent) {
+    // Only compare project/cwd when the incoming event actually provides cwd
+    let projectChanged = false;
+    if (cwd) {
+      projectChanged = agent.project !== project || agent.cwd !== cwd;
+      agent.project = project;
+      agent.cwd = cwd;
+    }
+    if (sessionId) agent.sessionId = sessionId;
+    return { agent, isNew: false, projectChanged };
+  }
 
   agent = {
-    id,
-    name: `@${name}`,
-    abbreviation,
-    department: 'SUBAGENT',
+    agentId,
+    agentType,
+    project,
+    cwd: cwd || '',
+    sessionId: sessionId || '',
     color,
-    gridPosition: { row, col },
-    dynamic: true
+    abbreviation
   };
 
-  dynamicConfig.push(agent);
-  return { agent, isNew: true };
+  agentRegistry[agentId] = agent;
+  return { agent, isNew: true, projectChanged: false };
+}
+
+function getRegistryArray() {
+  return Object.values(agentRegistry);
 }
 
 app.use(express.static('public'));
 app.use(express.json());
 
-// Serve agent config (dynamic)
+// Serve agent registry
 app.get('/api/config', (req, res) => {
-  res.json(dynamicConfig);
+  res.json(getRegistryArray());
 });
 
 // Get all agent states
@@ -76,12 +88,24 @@ app.get('/api/agents', (req, res) => {
 
 // Update agent status via HTTP
 app.post('/api/agent/:id/status', (req, res) => {
-  const { id } = req.params;
-  const { status, currentTask, currentTool, agentType, agentId, lastMessage } = req.body;
-  const filePath = path.join(STATE_DIR, `${id}.json`);
+  const id = decodeURIComponent(req.params.id);
+  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId } = req.body;
+  // Sanitize for filename: keep uniqueness but make filesystem-safe
+  const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const filePath = path.join(STATE_DIR, `${safeFilename}.json`);
 
-  // Ensure agent exists in config (auto-register if needed)
-  const { agent, isNew } = getOrCreateAgent(id, agentType);
+  // Ensure agent exists in registry (auto-register if needed)
+  // But don't create new entries for agents going offline - they're already gone
+  const type = agentType || 'unknown';
+  const existsInRegistry = !!agentRegistry[id];
+  if (!existsInRegistry && status === 'offline') {
+    return res.json({ ok: true, skipped: true });
+  }
+  // Don't register with "unknown" type if we have no type info and agent doesn't exist yet
+  if (!existsInRegistry && type === 'unknown') {
+    return res.json({ ok: true, skipped: true });
+  }
+  const { agent, isNew, projectChanged } = getOrCreateAgent(id, type, cwd, sessionId);
 
   let existing = {};
   if (fs.existsSync(filePath)) {
@@ -92,27 +116,77 @@ app.post('/api/agent/:id/status', (req, res) => {
 
   const updated = {
     ...existing,
-    id,
+    agentId: id,
+    agentType: agent.agentType,
+    project: agent.project,
+    cwd: agent.cwd,
+    sessionId: agent.sessionId,
     status: status || existing.status || 'offline',
     currentTask: currentTask !== undefined ? currentTask : existing.currentTask,
     currentTool: currentTool !== undefined ? currentTool : existing.currentTool,
     lastActivity: new Date().toISOString()
   };
 
-  if (agentId) updated.claudeAgentId = agentId;
   if (lastMessage) updated.lastMessage = lastMessage;
 
   fs.writeFileSync(filePath, JSON.stringify(updated, null, 2));
 
-  // If this is a newly registered agent, broadcast the updated config
-  if (isNew) {
-    broadcast({ type: 'config_update', config: dynamicConfig });
+  // Broadcast updated config if agent is new or project changed
+  if (isNew || projectChanged) {
+    broadcast({ type: 'config_update', config: getRegistryArray() });
   }
 
   res.json(updated);
 });
 
-// Clear all agent states (useful for fresh starts)
+// Remove offline agents (keeps active/idle ones)
+app.post('/api/cleanup/offline-agents', (req, res) => {
+  const states = readAllStates();
+  let removed = 0;
+  for (const [id, state] of Object.entries(states)) {
+    if (state.status === 'offline') {
+      const filename = state._filename || `${id}.json`;
+      try { fs.unlinkSync(path.join(STATE_DIR, filename)); } catch {}
+      delete agentRegistry[id];
+      removed++;
+    }
+  }
+  if (removed > 0) {
+    broadcast({ type: 'init', config: getRegistryArray(), states: readAllStates() });
+  }
+  res.json({ ok: true, removed });
+});
+
+// Remove inactive projects (all agents in a project are offline)
+app.post('/api/cleanup/offline-projects', (req, res) => {
+  const states = readAllStates();
+  // Group by project
+  const projects = {};
+  for (const [id, state] of Object.entries(states)) {
+    const agent = agentRegistry[id];
+    const project = (agent && agent.project) || state.project || 'unknown';
+    if (!projects[project]) projects[project] = [];
+    projects[project].push({ id, state });
+  }
+  let removed = 0;
+  for (const [project, agents] of Object.entries(projects)) {
+    const allOffline = agents.every(a => a.state.status === 'offline');
+    if (allOffline) {
+      for (const { id, state } of agents) {
+        const filename = state._filename || `${id}.json`;
+        try { fs.unlinkSync(path.join(STATE_DIR, filename)); } catch {}
+        delete agentRegistry[id];
+        removed++;
+      }
+    }
+  }
+  if (removed > 0) {
+    broadcast({ type: 'init', config: getRegistryArray(), states: readAllStates() });
+  }
+  res.json({ ok: true, removed });
+});
+
+// Clear all agent states
 app.post('/api/reset', (req, res) => {
   if (fs.existsSync(STATE_DIR)) {
     for (const file of fs.readdirSync(STATE_DIR)) {
@@ -121,10 +195,10 @@ app.post('/api/reset', (req, res) => {
       }
     }
   }
-  // Reload config from file (drops dynamic agents)
-  loadConfig();
-  colorIndex = 0;
-  broadcast({ type: 'init', config: dynamicConfig, states: {} });
+  agentRegistry = {};
+  Object.keys(typeColorMap).forEach(k => delete typeColorMap[k]);
+  typeColorIndex = 0;
+  broadcast({ type: 'init', config: [], states: {} });
   res.json({ ok: true });
 });
 
@@ -135,7 +209,11 @@ function readAllStates() {
     if (!file.endsWith('.json')) continue;
     try {
       const data = JSON.parse(fs.readFileSync(path.join(STATE_DIR, file), 'utf8'));
-      states[data.id] = data;
+      const id = data.agentId || data.id;
+      if (!id) continue; // skip malformed files
+      data.agentId = id; // normalize
+      data._filename = file; // preserve actual filename for writes
+      states[id] = data;
     } catch (e) {
       // skip malformed files
     }
@@ -146,7 +224,9 @@ function readAllStates() {
 // WebSocket: send full state on connect, then diffs
 wss.on('connection', (ws) => {
   const states = readAllStates();
-  ws.send(JSON.stringify({ type: 'init', config: dynamicConfig, states }));
+  // Strip internal _filename before sending to client
+  for (const s of Object.values(states)) delete s._filename;
+  ws.send(JSON.stringify({ type: 'init', config: getRegistryArray(), states }));
 });
 
 function broadcast(msg) {
@@ -180,8 +260,39 @@ watcher.on('change', handleFileChange);
 watcher.on('add', handleFileChange);
 watcher.on('error', (err) => console.error('Watcher error:', err));
 
-// Init
-loadConfig();
+// Heartbeat sweep: infer idle/offline for agents with no explicit stop event
+const IDLE_AFTER_MS = 60 * 1000;     // 60s no activity -> idle
+const OFFLINE_AFTER_MS = 5 * 60 * 1000; // 5min no activity -> offline
+
+setInterval(() => {
+  const now = Date.now();
+  const states = readAllStates();
+  let changed = false;
+
+  for (const [id, state] of Object.entries(states)) {
+    if (state.status === 'offline') continue;
+    const elapsed = now - new Date(state.lastActivity).getTime();
+
+    let newStatus = null;
+    if (elapsed >= OFFLINE_AFTER_MS && state.status !== 'offline') {
+      newStatus = 'offline';
+    } else if (elapsed >= IDLE_AFTER_MS && state.status === 'active') {
+      newStatus = 'idle';
+    }
+
+    if (newStatus) {
+      state.status = newStatus;
+      state.currentTool = null;
+      const filename = state._filename || `${id}.json`;
+      delete state._filename;
+      const filePath = path.join(STATE_DIR, filename);
+      try {
+        fs.writeFileSync(filePath, JSON.stringify(state, null, 2));
+        changed = true;
+      } catch {}
+    }
+  }
+}, 10000); // check every 10s
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

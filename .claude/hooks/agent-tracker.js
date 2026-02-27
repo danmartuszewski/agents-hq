@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Agent Tracker - receives Claude Code hook events via stdin JSON
 // and POSTs agent state updates to the Agents HQ dashboard.
+//
+// Works for both main sessions (no agent_id) and subagents.
+// Main sessions use session_id as identity and "lead" as type.
 
 const http = require('http');
 
@@ -18,14 +21,20 @@ process.stdin.on('end', () => {
     process.exit(0);
   }
 
-  const agentType = data.agent_type || 'unknown';
+  const isSubagent = !!data.agent_id;
+  const agentType = data.agent_type || (isSubagent ? null : 'lead');
   const agentId = data.agent_id || data.session_id || '';
+  // Hooks run in the project directory, so process.cwd() is a reliable fallback
+  const cwd = data.cwd || process.cwd();
+  const sessionId = data.session_id || '';
   const toolName = data.tool_name || '';
   const toolInput = data.tool_input || {};
   const lastMsg = (data.last_assistant_message || '').substring(0, 200);
 
-  // Use agent_type as readable dashboard ID
-  const safeId = agentType.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown';
+  if (!agentId) process.exit(0);
+
+  // URL-encode the raw ID to make it path-safe without losing uniqueness
+  const safeId = encodeURIComponent(agentId);
 
   let body;
 
@@ -35,9 +44,11 @@ process.stdin.on('end', () => {
         status: 'active',
         currentTask: 'Starting up',
         currentTool: null,
-        agentType,
-        agentId
+        agentId,
+        cwd,
+        sessionId
       };
+      if (agentType) body.agentType = agentType;
       break;
 
     case 'SubagentStop':
@@ -45,8 +56,11 @@ process.stdin.on('end', () => {
         status: 'offline',
         currentTask: null,
         currentTool: null,
-        lastMessage: lastMsg
+        lastMessage: lastMsg,
+        cwd,
+        sessionId
       };
+      if (agentType) body.agentType = agentType;
       break;
 
     case 'PreToolUse':
@@ -64,22 +78,28 @@ process.stdin.on('end', () => {
       body = {
         status: 'active',
         currentTool: toolName,
-        currentTask: taskSummary || undefined
+        currentTask: taskSummary || undefined,
+        cwd,
+        sessionId
       };
+      if (agentType) body.agentType = agentType;
       break;
 
     case 'PostToolUse':
       body = {
         status: 'active',
-        currentTool: null
+        currentTool: null,
+        cwd,
+        sessionId
       };
+      if (agentType) body.agentType = agentType;
       break;
 
     default:
       process.exit(0);
   }
 
-  // POST to dashboard
+  // POST to dashboard using agent_id (or session_id for main) as the URL param
   const url = new URL(`/api/agent/${safeId}/status`, DASHBOARD_URL);
   const payload = JSON.stringify(body);
 

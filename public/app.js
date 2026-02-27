@@ -1,18 +1,108 @@
 // ============================================================
 // State
 // ============================================================
-let agentConfig = [];
-let agentStates = {};
+let agentRegistry = [];   // flat array from server: { agentId, agentType, project, cwd, sessionId, color, abbreviation }
+let agentStates = {};      // { agentId: stateObj }
 let currentLayout = localStorage.getItem('agents-hq-layout') || 'isometric';
 let agentLogs = {};       // { agentId: [{ time, oldStatus, newStatus, tool, task }] }
 let agentToolCounts = {}; // { agentId: { toolName: count } }
 let selectedAgentId = null;
+let cachedProjectMap = null;
+let cachedProjectLayout = null;
 
-const DYNAMIC_COLORS = [
-  '#f5a623', '#4a90d9', '#50e3c2', '#7b68ee', '#ff6b6b',
-  '#4cd964', '#b8b8b8', '#e6a8d7', '#ff9f43', '#00d2d3',
-  '#6c5ce7', '#fd79a8', '#00cec9', '#e17055', '#74b9ff'
-];
+// ============================================================
+// Project Map & Layout helpers
+// ============================================================
+function buildProjectMap() {
+  // { projectName: { cwd, types: { typeName: { color, abbreviation, instances: [agentId, ...] } } } }
+  const map = {};
+  for (const agent of agentRegistry) {
+    if (!map[agent.project]) {
+      map[agent.project] = { cwd: agent.cwd, types: {} };
+    }
+    if (!map[agent.project].types[agent.agentType]) {
+      map[agent.project].types[agent.agentType] = {
+        color: agent.color,
+        abbreviation: agent.abbreviation,
+        instances: []
+      };
+    }
+    map[agent.project].types[agent.agentType].instances.push(agent.agentId);
+    // Keep cwd up to date
+    if (agent.cwd) map[agent.project].cwd = agent.cwd;
+  }
+  cachedProjectMap = map;
+  return map;
+}
+
+function getDisplayName(agent) {
+  const pm = cachedProjectMap || buildProjectMap();
+  const typeInfo = pm[agent.project]?.types?.[agent.agentType];
+  if (typeInfo && typeInfo.instances.length > 1) {
+    const idx = typeInfo.instances.indexOf(agent.agentId) + 1;
+    return `@${agent.agentType} #${idx}`;
+  }
+  return `@${agent.agentType}`;
+}
+
+function getAgentById(agentId) {
+  return agentRegistry.find(a => a.agentId === agentId);
+}
+
+function invalidateLayout() {
+  cachedProjectMap = null;
+  cachedProjectLayout = null;
+}
+
+function computeProjectLayout() {
+  if (cachedProjectLayout) return cachedProjectLayout;
+  const pm = buildProjectMap();
+  const projects = Object.keys(pm);
+  const GRID = 14; // fixed grid size, same as original
+  if (projects.length === 0) return (cachedProjectLayout = { zones: {}, gridCols: GRID, gridRows: GRID });
+
+  // Arrange projects in a grid of zones that fits within the fixed 14x14 floor
+  const projCols = Math.ceil(Math.sqrt(projects.length));
+  const projRows = Math.ceil(projects.length / projCols);
+
+  // Divide the available space evenly among project zones
+  const usable = GRID - 2; // 1-tile margin on each side
+  const cellW = usable / projCols;
+  const cellH = usable / projRows;
+
+  const zones = {};
+
+  projects.forEach((projName, pi) => {
+    const pCol = pi % projCols;
+    const pRow = Math.floor(pi / projCols);
+    const originCol = 1 + pCol * cellW;
+    const originRow = 1 + pRow * cellH;
+
+    const types = Object.keys(pm[projName].types);
+    const maxInstances = Math.max(...types.map(t => pm[projName].types[t].instances.length));
+
+    // Spread agents evenly within the zone
+    const colSpacing = Math.min(1.5, (cellW - 1) / Math.max(1, maxInstances));
+    const rowSpacing = Math.min(1.5, (cellH - 1) / Math.max(1, types.length));
+
+    const zone = { types, originCol, originRow, agents: {} };
+
+    types.forEach((typeName, ti) => {
+      const typeInfo = pm[projName].types[typeName];
+      typeInfo.instances.forEach((agentId, ii) => {
+        zone.agents[agentId] = {
+          col: originCol + 1 + ii * colSpacing,
+          row: originRow + 1 + ti * rowSpacing
+        };
+      });
+    });
+
+    zones[projName] = zone;
+  });
+
+  cachedProjectLayout = { zones, gridCols: GRID, gridRows: GRID };
+  return cachedProjectLayout;
+}
 
 // ============================================================
 // Theme Switcher
@@ -40,6 +130,7 @@ document.getElementById('theme-btn').addEventListener('click', (e) => {
 
 document.addEventListener('click', () => {
   document.getElementById('theme-dropdown').classList.remove('open');
+  document.getElementById('cleanup-dropdown').classList.remove('open');
 });
 
 document.querySelectorAll('.theme-option').forEach(opt => {
@@ -52,6 +143,35 @@ document.querySelectorAll('.theme-option').forEach(opt => {
 
 // Apply saved theme on load (skip render - canvas not ready yet)
 applyTheme(currentTheme, true);
+
+// ============================================================
+// Cleanup Switcher
+// ============================================================
+document.getElementById('cleanup-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('cleanup-dropdown').classList.toggle('open');
+  // Close theme dropdown if open
+  document.getElementById('theme-dropdown').classList.remove('open');
+});
+
+document.querySelectorAll('.cleanup-option').forEach(opt => {
+  opt.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    document.getElementById('cleanup-dropdown').classList.remove('open');
+    const action = opt.dataset.action;
+    try {
+      if (action === 'offline-agents') {
+        await fetch('/api/cleanup/offline-agents', { method: 'POST' });
+      } else if (action === 'offline-projects') {
+        await fetch('/api/cleanup/offline-projects', { method: 'POST' });
+      } else if (action === 'reset-all') {
+        await fetch('/api/reset', { method: 'POST' });
+      }
+    } catch (err) {
+      // silently ignore
+    }
+  });
+});
 
 // ============================================================
 // DOM refs
@@ -91,17 +211,27 @@ function renderCurrentLayout() {
 }
 
 // ============================================================
+// Empty State
+// ============================================================
+function drawEmptyState(ctx, W, H, tv) {
+  ctx.fillStyle = tv.textDim;
+  ctx.font = '14px "JetBrains Mono", monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('Waiting for agents...', W / 2, H / 2);
+}
+
+// ============================================================
 // HQ View — Full 3D Canvas Renderer
 // ============================================================
 const isoCanvas = document.getElementById('iso-grid');
 const isoCtx = isoCanvas.getContext('2d');
 
 // 3D scene parameters
-const GRID_COLS = 14, GRID_ROWS = 14;
 const TILE_SIZE = 55;
 const SPHERE_RADIUS = 20;
 const CAMERA_DIST = 900;
-const BASE_TILT = 35; // default X tilt (degrees) for isometric-like view
+const BASE_TILT = 35;
 
 // Interactive transform state
 const isoTransform = { rotX: 0, rotY: 0, scale: 1, panX: 0, panY: 0 };
@@ -205,7 +335,7 @@ function drawSphere(ctx, sx, sy, r, color, abbrev, status) {
   ctx.arc(sx, sy, r, 0, Math.PI * 2);
   ctx.fill();
 
-  // Rim light (subtle bright edge on top)
+  // Rim light
   const rim = ctx.createRadialGradient(sx, sy - r * 0.1, r * 0.75, sx, sy, r);
   rim.addColorStop(0, 'rgba(255,255,255,0)');
   rim.addColorStop(0.9, 'rgba(255,255,255,0)');
@@ -226,7 +356,6 @@ function drawSphere(ctx, sx, sy, r, color, abbrev, status) {
 }
 
 function darkenColor(color, factor) {
-  // Parse hex or named color via temporary element
   const m = color.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
   if (m) {
     const r = Math.round(parseInt(m[1], 16) * factor);
@@ -237,16 +366,17 @@ function darkenColor(color, factor) {
   return color;
 }
 
-// ---- Department positions in grid coords ----
-const deptRowOffset = { 'C-SUITE': 1, 'OPERATIONS': 4, 'CREATIVE': 7, 'SUBAGENT': 10 };
-const deptLabelPos = { 'C-SUITE': { col: 1, row: 1.5 }, 'OPERATIONS': { col: 1, row: 4 }, 'CREATIVE': { col: 1, row: 7.5 }, 'SUBAGENT': { col: 1, row: 10.5 } };
-
+// ---- Dynamic project-based layout ----
 function agentToWorld(agent) {
-  const baseRow = (deptRowOffset[agent.department] || 0) + agent.gridPosition.row;
-  const baseCol = agent.gridPosition.col + 2;
-  // Center grid at origin; X = col axis, Z = row axis, Y = up
-  const wx = (baseCol - GRID_COLS / 2) * TILE_SIZE;
-  const wz = (baseRow - GRID_ROWS / 2) * TILE_SIZE;
+  const layout = computeProjectLayout();
+  const zone = layout.zones[agent.project];
+  if (!zone || !zone.agents[agent.agentId]) {
+    // Fallback: center of grid
+    return { x: 0, y: 0, z: 0 };
+  }
+  const pos = zone.agents[agent.agentId];
+  const wx = (pos.col - layout.gridCols / 2) * TILE_SIZE;
+  const wz = (pos.row - layout.gridRows / 2) * TILE_SIZE;
   return { x: wx, y: 0, z: wz };
 }
 
@@ -258,7 +388,18 @@ function draw3DScene() {
   const tv = getThemeVars();
   const cx = W * 0.5 + isoTransform.panX, cy = H * 0.44 + isoTransform.panY;
 
-  // Background glow (screen-space, not rotated)
+  if (agentRegistry.length === 0) {
+    drawEmptyState(ctx, W, H, tv);
+    // Still draw particles
+    drawParticles(ctx, W, H, tv);
+    return;
+  }
+
+  const layout = computeProjectLayout();
+  const GRID_COLS = layout.gridCols;
+  const GRID_ROWS = layout.gridRows;
+
+  // Background glow
   const bgGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.55);
   bgGlow.addColorStop(0, tv.glowInner);
   bgGlow.addColorStop(0.5, tv.glowMid);
@@ -278,7 +419,6 @@ function draw3DScene() {
       const wz = (r - GRID_ROWS / 2) * TILE_SIZE;
       const hs = TILE_SIZE * 0.48;
 
-      // 4 corners of tile in world space (Y=0 plane)
       const corners3D = [
         { x: wx, y: 0, z: wz - hs },
         { x: wx + hs, y: 0, z: wz },
@@ -286,17 +426,14 @@ function draw3DScene() {
         { x: wx - hs, y: 0, z: wz }
       ];
 
-      // Transform and project
       const projected = corners3D.map(p => {
         const t = transform3D(p.x, p.y, p.z);
         return project(t.x, t.y, t.z, cx, cy);
       });
 
-      // Depth = average Z after rotation
       const centerT = transform3D(wx, 0, wz);
       const depth = centerT.z;
 
-      // Brightness based on distance from center
       const dc = Math.sqrt((c - halfGrid) ** 2 + (r - halfGrid) ** 2);
       const brightness = Math.max(0, 1 - dc / maxDist);
       const alpha = 0.12 + brightness * 0.30;
@@ -320,52 +457,60 @@ function draw3DScene() {
 
   // Agent spheres
   const newProjected = [];
-  for (const agent of agentConfig) {
-    const state = agentStates[agent.id] || { status: 'offline' };
+  for (const agent of agentRegistry) {
+    const state = agentStates[agent.agentId] || { status: 'offline' };
     const wp = agentToWorld(agent);
-    const sphereY = -SPHERE_RADIUS; // above floor
+    const sphereY = -SPHERE_RADIUS;
     const t = transform3D(wp.x, sphereY, wp.z);
     const p = project(t.x, t.y, t.z, cx, cy);
     const r = SPHERE_RADIUS * p.scale;
 
-    newProjected.push({ id: agent.id, sx: p.sx, sy: p.sy, r });
+    newProjected.push({ id: agent.agentId, sx: p.sx, sy: p.sy, r });
 
+    const displayName = getDisplayName(agent);
     drawables.push({
       type: 'agent', depth: t.z, draw: () => {
         drawSphere(ctx, p.sx, p.sy, r, agent.color, agent.abbreviation, state.status);
-        // Agent name below sphere
         ctx.fillStyle = state.status === 'offline' ? tv.textDim : tv.textMuted;
         ctx.font = `${Math.round(r * 0.45)}px 'JetBrains Mono', monospace`;
         ctx.textAlign = 'center';
-        ctx.fillText(agent.name, p.sx, p.sy + r + Math.round(r * 0.55));
+        ctx.fillText(displayName, p.sx, p.sy + r + Math.round(r * 0.55));
       }
     });
   }
   projectedAgents = newProjected;
 
-  // Department labels - on the 3D floor
-  const activeDepts = new Set(agentConfig.map(a => a.department));
-  for (const [dept, pos] of Object.entries(deptLabelPos)) {
-    if (!activeDepts.has(dept)) continue;
-    const wx = (pos.col - GRID_COLS / 2) * TILE_SIZE - TILE_SIZE * 1.5;
-    const wz = (pos.row - GRID_ROWS / 2) * TILE_SIZE;
+  // Project labels on the floor
+  const pm = cachedProjectMap || buildProjectMap();
+  for (const [projName, projData] of Object.entries(layout.zones)) {
+    const wx = (projData.originCol - GRID_COLS / 2) * TILE_SIZE - TILE_SIZE * 0.5;
+    const wz = (projData.originRow - GRID_ROWS / 2) * TILE_SIZE;
     const t = transform3D(wx, -5, wz);
     const p = project(t.x, t.y, t.z, cx, cy);
+
+    // Project label (large)
     drawables.push({
       type: 'label', depth: t.z, draw: () => {
-        ctx.fillStyle = tv.deptLabel;
-        ctx.font = `${Math.max(9, Math.round(11 * p.scale))}px 'JetBrains Mono', monospace`;
+        ctx.fillStyle = tv.accent;
+        ctx.font = `bold ${Math.max(10, Math.round(13 * p.scale))}px 'JetBrains Mono', monospace`;
         ctx.textAlign = 'left';
-        ctx.fillText(dept, p.sx, p.sy);
+        const truncated = projName.length > 20 ? projName.substring(0, 18) + '..' : projName;
+        ctx.fillText(truncated.toUpperCase(), p.sx, p.sy);
       }
     });
+
+    // Type labels omitted — display names on spheres already show the type
   }
 
-  // Sort back-to-front (larger depth = farther from camera = draw first)
+  // Sort back-to-front
   drawables.sort((a, b) => b.depth - a.depth);
   for (const d of drawables) d.draw();
 
-  // Particles (screen-space, on top of everything)
+  // Particles
+  drawParticles(ctx, W, H, tv);
+}
+
+function drawParticles(ctx, W, H, tv) {
   const now = Date.now();
   for (const p of particles) {
     const flicker = 0.5 + 0.5 * Math.sin(now * 0.001 + p.phase);
@@ -376,7 +521,6 @@ function draw3DScene() {
     p.y -= p.speed;
     if (p.y < -0.05) { p.y = 1.05; p.x = Math.random(); }
   }
-
 }
 
 // ---- Public API for layout system ----
@@ -397,7 +541,7 @@ function animateIso() {
 // ---- HQ View Interaction Handlers (3D orbit) ----
 (function initIsoInteraction() {
   const view = document.getElementById('view-isometric');
-  let dragMode = null; // 'rotate' | 'pan'
+  let dragMode = null;
   let dragStartX = 0, dragStartY = 0;
   let startRotX = 0, startRotY = 0;
   let startPanX = 0, startPanY = 0;
@@ -409,16 +553,14 @@ function animateIso() {
     isoResetBtn.classList.toggle('visible', !isDefault);
   }
 
-  // Mouse orbit / pan
   view.addEventListener('mousedown', (e) => {
     if (e.target.closest('.iso-reset-btn')) return;
     const isPan = e.button === 1 || (e.button === 0 && e.altKey);
     if (!isPan) {
-      // Check if clicking on an agent sphere
       const rect = isoCanvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
       for (const a of projectedAgents) {
-        if (Math.hypot(mx - a.sx, my - a.sy) <= a.r) return; // let click handler deal with it
+        if (Math.hypot(mx - a.sx, my - a.sy) <= a.r) return;
       }
     }
     dragMode = isPan ? 'pan' : 'rotate';
@@ -437,7 +579,6 @@ function animateIso() {
 
   window.addEventListener('mousemove', (e) => {
     if (!dragMode) {
-      // Hover cursor
       const rect = isoCanvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
       let overAgent = false;
@@ -468,15 +609,10 @@ function animateIso() {
     }
   });
 
-  // Agent click detection
   isoCanvas.addEventListener('click', (e) => {
     const rect = isoCanvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    // Check front-to-back (closer agents first)
-    const sorted = [...projectedAgents].sort((a, b) => {
-      // use screen radius as proxy for closeness
-      return b.r - a.r;
-    });
+    const sorted = [...projectedAgents].sort((a, b) => b.r - a.r);
     for (const a of sorted) {
       if (Math.hypot(mx - a.sx, my - a.sy) <= a.r) {
         openAgentDetail(a.id);
@@ -486,9 +622,8 @@ function animateIso() {
   });
 
   view.addEventListener('contextmenu', (e) => e.preventDefault());
-  view.addEventListener('auxclick', (e) => e.preventDefault()); // prevent middle-click paste
+  view.addEventListener('auxclick', (e) => e.preventDefault());
 
-  // Scroll to zoom
   view.addEventListener('wheel', (e) => {
     e.preventDefault();
     const delta = e.deltaY > 0 ? 0.93 : 1.07;
@@ -500,13 +635,13 @@ function animateIso() {
   view.addEventListener('touchstart', (e) => {
     if (e.target.closest('.iso-reset-btn')) return;
     if (e.touches.length === 1) {
-      dragging = true;
+      dragMode = 'rotate';
       dragStartX = e.touches[0].clientX;
       dragStartY = e.touches[0].clientY;
       startRotX = isoTransform.rotX;
       startRotY = isoTransform.rotY;
     } else if (e.touches.length === 2) {
-      dragging = false;
+      dragMode = null;
       lastPinchDist = Math.hypot(
         e.touches[1].clientX - e.touches[0].clientX,
         e.touches[1].clientY - e.touches[0].clientY
@@ -515,7 +650,7 @@ function animateIso() {
   }, { passive: true });
 
   view.addEventListener('touchmove', (e) => {
-    if (e.touches.length === 1 && dragging) {
+    if (e.touches.length === 1 && dragMode === 'rotate') {
       const dx = e.touches[0].clientX - dragStartX;
       const dy = e.touches[0].clientY - dragStartY;
       isoTransform.rotY = startRotY - dx * 0.3;
@@ -535,9 +670,8 @@ function animateIso() {
     e.preventDefault();
   }, { passive: false });
 
-  view.addEventListener('touchend', () => { dragging = false; lastPinchDist = 0; });
+  view.addEventListener('touchend', () => { dragMode = null; lastPinchDist = 0; });
 
-  // Reset button
   isoResetBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const start = { ...isoTransform };
@@ -573,49 +707,69 @@ function renderList() {
   const body = document.getElementById('list-body');
   body.innerHTML = '';
 
-  const sorted = [...agentConfig].sort((a, b) => {
-    const deptOrder = { 'C-SUITE': 0, 'OPERATIONS': 1, 'CREATIVE': 2, 'SUBAGENT': 3 };
-    return (deptOrder[a.department] ?? 4) - (deptOrder[b.department] ?? 4) || a.name.localeCompare(b.name);
-  });
+  if (agentRegistry.length === 0) {
+    body.innerHTML = '<div class="list-empty-state">Waiting for agents...</div>';
+    return;
+  }
 
-  for (const agent of sorted) {
-    const state = agentStates[agent.id] || { status: 'offline' };
-    const row = document.createElement('div');
-    row.className = `list-row ${state.status}`;
-    row.id = `list-agent-${agent.id}`;
+  const pm = buildProjectMap();
+  const projects = Object.keys(pm).sort();
 
-    const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '—';
-    const taskText = state.currentTask || '—';
-    const toolHtml = state.currentTool ? `<span class="tool-badge">${state.currentTool}</span>` : '—';
+  for (const projName of projects) {
+    // Project header row
+    const header = document.createElement('div');
+    header.className = 'list-project-header';
+    const truncated = projName.length > 30 ? projName.substring(0, 28) + '..' : projName;
+    header.textContent = truncated.toUpperCase();
+    body.appendChild(header);
 
-    row.innerHTML = `
-      <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span></span>
-      <span class="list-col col-agent"><span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>${agent.name}</span>
-      <span class="list-col col-dept">${agent.department}</span>
-      <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
-      <span class="list-col col-tool">${toolHtml}</span>
-      <span class="list-col col-time"><span class="time-text">${timeSince}</span></span>
-    `;
-    attachAgentClick(row, agent.id);
-    body.appendChild(row);
+    // Collect agents for this project, sort by type then instance
+    const projectAgents = agentRegistry
+      .filter(a => a.project === projName)
+      .sort((a, b) => a.agentType.localeCompare(b.agentType) || a.agentId.localeCompare(b.agentId));
+
+    for (const agent of projectAgents) {
+      const state = agentStates[agent.agentId] || { status: 'offline' };
+      const row = document.createElement('div');
+      row.className = `list-row ${state.status}`;
+      row.id = `list-agent-${agent.agentId}`;
+
+      const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '—';
+      const taskText = state.currentTask || '—';
+      const toolHtml = state.currentTool ? `<span class="tool-badge">${state.currentTool}</span>` : '—';
+      const displayName = getDisplayName(agent);
+
+      row.innerHTML = `
+        <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span></span>
+        <span class="list-col col-agent"><span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>${displayName}</span>
+        <span class="list-col col-type">${agent.agentType}</span>
+        <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
+        <span class="list-col col-tool">${toolHtml}</span>
+        <span class="list-col col-time"><span class="time-text">${timeSince}</span></span>
+      `;
+      attachAgentClick(row, agent.agentId);
+      body.appendChild(row);
+    }
   }
 }
 
 function updateList(agentId) {
   const row = document.getElementById(`list-agent-${agentId}`);
   if (!row) { renderList(); return; }
-  const agent = agentConfig.find(a => a.id === agentId);
+  const agent = getAgentById(agentId);
+  if (!agent) return;
   const state = agentStates[agentId] || { status: 'offline' };
   row.className = `list-row ${state.status}`;
 
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '—';
   const taskText = state.currentTask || '—';
   const toolHtml = state.currentTool ? `<span class="tool-badge">${state.currentTool}</span>` : '—';
+  const displayName = getDisplayName(agent);
 
   row.innerHTML = `
     <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span></span>
-    <span class="list-col col-agent"><span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>${agent.name}</span>
-    <span class="list-col col-dept">${agent.department}</span>
+    <span class="list-col col-agent"><span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>${displayName}</span>
+    <span class="list-col col-type">${agent.agentType}</span>
     <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
     <span class="list-col col-tool">${toolHtml}</span>
     <span class="list-col col-time"><span class="time-text">${timeSince}</span></span>
@@ -631,30 +785,52 @@ function renderCards() {
   const container = document.getElementById('cards-container');
   container.innerHTML = '';
 
-  for (const agent of agentConfig) {
-    const state = agentStates[agent.id] || { status: 'offline' };
-    const card = createCard(agent, state);
-    container.appendChild(card);
+  if (agentRegistry.length === 0) {
+    container.innerHTML = '<div class="cards-empty-state">Waiting for agents...</div>';
+    return;
+  }
+
+  const pm = buildProjectMap();
+  const projects = Object.keys(pm).sort();
+
+  for (const projName of projects) {
+    // Project section header
+    const header = document.createElement('div');
+    header.className = 'cards-project-header';
+    const truncated = projName.length > 30 ? projName.substring(0, 28) + '..' : projName;
+    header.textContent = truncated.toUpperCase();
+    container.appendChild(header);
+
+    const projectAgents = agentRegistry
+      .filter(a => a.project === projName)
+      .sort((a, b) => a.agentType.localeCompare(b.agentType) || a.agentId.localeCompare(b.agentId));
+
+    for (const agent of projectAgents) {
+      const state = agentStates[agent.agentId] || { status: 'offline' };
+      const card = createCard(agent, state);
+      container.appendChild(card);
+    }
   }
 }
 
 function createCard(agent, state) {
   const card = document.createElement('div');
   card.className = `agent-card ${state.status}`;
-  card.id = `card-agent-${agent.id}`;
+  card.id = `card-agent-${agent.agentId}`;
   card.style.setProperty('--agent-color', agent.color);
 
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '—';
   const taskText = state.currentTask || 'No active task';
   const toolHtml = state.currentTool ? `<span class="card-tool">${state.currentTool}</span>` : '';
   const statusLabel = state.status.toUpperCase();
+  const displayName = getDisplayName(agent);
 
   card.innerHTML = `
     <div class="card-header">
       <div class="card-orb" style="background: ${agent.color}">${agent.abbreviation}</div>
       <div class="card-info">
-        <div class="card-name">${agent.name}</div>
-        <div class="card-dept">${agent.department}</div>
+        <div class="card-name">${displayName}</div>
+        <div class="card-dept">${agent.agentType}</div>
       </div>
       <span class="card-status-badge">${statusLabel}</span>
     </div>
@@ -664,12 +840,12 @@ function createCard(agent, state) {
       <span class="card-time">${timeSince}</span>
     </div>
   `;
-  attachAgentClick(card, agent.id);
+  attachAgentClick(card, agent.agentId);
   return card;
 }
 
 function updateCards(agentId) {
-  const agent = agentConfig.find(a => a.id === agentId);
+  const agent = getAgentById(agentId);
   if (!agent) return;
   const state = agentStates[agentId] || { status: 'offline' };
   const old = document.getElementById(`card-agent-${agentId}`);
@@ -704,37 +880,47 @@ function graphProject(x, y, z, cx, cy) {
 }
 
 function initGraphNodes() {
-  const depts = {};
-  for (const agent of agentConfig) {
-    if (!depts[agent.department]) depts[agent.department] = [];
-    depts[agent.department].push(agent);
-  }
-
-  const deptList = Object.keys(depts);
+  // Two-level clustering: projects as outer ring, types as inner clusters
+  const pm = buildProjectMap();
+  const projects = Object.keys(pm);
   graphNodes = [];
+
+  if (projects.length === 0) return;
 
   const cx = graphCanvas.width / 2;
   const cy = graphCanvas.height / 2;
-  const clusterRadius = Math.min(cx, cy) * 0.55;
+  const projectRadius = Math.min(cx, cy) * 0.55;
 
-  deptList.forEach((dept, di) => {
-    const angle = (di / deptList.length) * Math.PI * 2 - Math.PI / 2;
-    const clusterX = Math.cos(angle) * clusterRadius;
-    const clusterZ = Math.sin(angle) * clusterRadius;
+  projects.forEach((projName, pi) => {
+    const projAngle = (pi / projects.length) * Math.PI * 2 - Math.PI / 2;
+    const projX = Math.cos(projAngle) * projectRadius;
+    const projZ = Math.sin(projAngle) * projectRadius;
 
-    const agents = depts[dept];
-    agents.forEach((agent, ai) => {
-      const subAngle = (ai / agents.length) * Math.PI * 2 + 0.3;
-      const spread = 55 + agents.length * 20;
-      graphNodes.push({
-        id: agent.id,
-        department: dept,
-        color: agent.color,
-        abbreviation: agent.abbreviation,
-        name: agent.name,
-        wx: clusterX + Math.cos(subAngle) * spread,
-        wz: clusterZ + Math.sin(subAngle) * spread,
-        radius: 26
+    const types = Object.keys(pm[projName].types);
+    types.forEach((typeName, ti) => {
+      const typeAngle = (ti / types.length) * Math.PI * 2 + 0.3;
+      const typeSpread = 40 + types.length * 15;
+      const typeX = projX + Math.cos(typeAngle) * typeSpread;
+      const typeZ = projZ + Math.sin(typeAngle) * typeSpread;
+
+      const instances = pm[projName].types[typeName].instances;
+      instances.forEach((agentId, ii) => {
+        const instAngle = (ii / instances.length) * Math.PI * 2;
+        const instSpread = instances.length > 1 ? 30 : 0;
+        const agent = getAgentById(agentId);
+        if (!agent) return;
+
+        graphNodes.push({
+          id: agentId,
+          project: projName,
+          agentType: typeName,
+          color: agent.color,
+          abbreviation: agent.abbreviation,
+          name: getDisplayName(agent),
+          wx: typeX + Math.cos(instAngle) * instSpread,
+          wz: typeZ + Math.sin(instAngle) * instSpread,
+          radius: 26
+        });
       });
     });
   });
@@ -746,13 +932,16 @@ function drawGraph() {
   const W = graphCanvas.width, H = graphCanvas.height;
   ctx.clearRect(0, 0, W, H);
 
-  if (graphNodes.length === 0) return;
+  if (graphNodes.length === 0) {
+    drawEmptyState(ctx, W, H, tv);
+    return;
+  }
 
   const cx = W / 2 + graphTransform.panX;
   const cy = H / 2 + graphTransform.panY;
 
-  // Group nodes by department and project positions
-  const deptGroups = {};
+  // Group nodes by project
+  const projGroups = {};
   const projected = [];
   for (const node of graphNodes) {
     const t = graphTransform3D(node.wx, 0, node.wz);
@@ -760,16 +949,15 @@ function drawGraph() {
     const r = node.radius * p.scale;
     const proj = { ...node, sx: p.sx, sy: p.sy, r, depth: t.z };
     projected.push(proj);
-    if (!deptGroups[node.department]) deptGroups[node.department] = [];
-    deptGroups[node.department].push(proj);
+    if (!projGroups[node.project]) projGroups[node.project] = [];
+    projGroups[node.project].push(proj);
   }
   projectedGraphNodes = projected;
 
-  // Collect drawables for depth sorting
   const drawables = [];
 
-  // Department cluster glows and labels
-  for (const [dept, nodes] of Object.entries(deptGroups)) {
+  // Project cluster glows and labels
+  for (const [projName, nodes] of Object.entries(projGroups)) {
     let avgSx = 0, avgSy = 0, avgDepth = 0, avgScale = 0;
     let topSy = Infinity;
     for (const n of nodes) {
@@ -781,7 +969,7 @@ function drawGraph() {
     const glowR = 140 * avgScale;
 
     drawables.push({
-      depth: avgDepth + 100, // draw behind everything
+      depth: avgDepth + 100,
       draw: () => {
         const glow = ctx.createRadialGradient(avgSx, avgSy, 0, avgSx, avgSy, glowR);
         glow.addColorStop(0, tv.clusterBg);
@@ -791,39 +979,48 @@ function drawGraph() {
         ctx.arc(avgSx, avgSy, glowR, 0, Math.PI * 2);
         ctx.fill();
 
-        // Department label above topmost node
-        ctx.fillStyle = tv.deptLabel;
-        ctx.font = `${Math.max(9, Math.round(11 * avgScale))}px "JetBrains Mono", monospace`;
+        // Project label above topmost node
+        ctx.fillStyle = tv.accent;
+        ctx.font = `bold ${Math.max(9, Math.round(12 * avgScale))}px "JetBrains Mono", monospace`;
         ctx.textAlign = 'center';
-        ctx.fillText(dept, avgSx, topSy - 12 * avgScale);
+        const truncated = projName.length > 20 ? projName.substring(0, 18) + '..' : projName;
+        ctx.fillText(truncated.toUpperCase(), avgSx, topSy - 14 * avgScale);
       }
     });
 
-    // Intra-department connections
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const lineDepth = Math.max(nodes[i].depth, nodes[j].depth);
-        drawables.push({
-          depth: lineDepth + 50,
-          draw: () => {
-            ctx.beginPath();
-            ctx.moveTo(nodes[i].sx, nodes[i].sy);
-            ctx.lineTo(nodes[j].sx, nodes[j].sy);
-            ctx.strokeStyle = tv.graphLine;
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-          }
-        });
+    // Intra-project connections (within same type)
+    const typeGroups = {};
+    for (const n of nodes) {
+      if (!typeGroups[n.agentType]) typeGroups[n.agentType] = [];
+      typeGroups[n.agentType].push(n);
+    }
+
+    for (const typeNodes of Object.values(typeGroups)) {
+      for (let i = 0; i < typeNodes.length; i++) {
+        for (let j = i + 1; j < typeNodes.length; j++) {
+          const lineDepth = Math.max(typeNodes[i].depth, typeNodes[j].depth);
+          drawables.push({
+            depth: lineDepth + 50,
+            draw: () => {
+              ctx.beginPath();
+              ctx.moveTo(typeNodes[i].sx, typeNodes[i].sy);
+              ctx.lineTo(typeNodes[j].sx, typeNodes[j].sy);
+              ctx.strokeStyle = tv.graphLine;
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+            }
+          });
+        }
       }
     }
   }
 
-  // Cross-department connections
-  const deptKeys = Object.keys(deptGroups);
-  for (let i = 0; i < deptKeys.length; i++) {
-    for (let j = i + 1; j < deptKeys.length; j++) {
-      const a = deptGroups[deptKeys[i]];
-      const b = deptGroups[deptKeys[j]];
+  // Cross-project connections
+  const projKeys = Object.keys(projGroups);
+  for (let i = 0; i < projKeys.length; i++) {
+    for (let j = i + 1; j < projKeys.length; j++) {
+      const a = projGroups[projKeys[i]];
+      const b = projGroups[projKeys[j]];
       let minDist = Infinity, bestA, bestB;
       for (const na of a) {
         for (const nb of b) {
@@ -860,7 +1057,6 @@ function drawGraph() {
     drawables.push({
       depth: node.depth,
       draw: () => {
-        // Active pulse ring
         if (isActive) {
           const pulse = ((now % 2000) / 2000);
           ctx.beginPath();
@@ -872,7 +1068,6 @@ function drawGraph() {
 
         drawSphere(ctx, node.sx, node.sy, node.r, node.color, node.abbreviation, status);
 
-        // Agent name below sphere
         ctx.fillStyle = isActive ? tv.graphNameActive : tv.graphNameDim;
         ctx.font = `${Math.max(8, Math.round(10 * (node.r / node.radius)))}px "JetBrains Mono", monospace`;
         ctx.textAlign = 'center';
@@ -881,7 +1076,6 @@ function drawGraph() {
     });
   }
 
-  // Depth sort: larger depth (farther) draws first
   drawables.sort((a, b) => b.depth - a.depth);
   for (const d of drawables) d.draw();
 }
@@ -990,7 +1184,6 @@ function animateGraph() {
     syncResetBtn();
   }, { passive: false });
 
-  // Touch support
   view.addEventListener('touchstart', (e) => {
     if (e.target.closest('.iso-reset-btn')) return;
     if (e.touches.length === 1) {
@@ -1079,22 +1272,24 @@ function closeAgentDetail() {
 
 function renderAgentDetail() {
   if (!selectedAgentId) return;
-  const agent = agentConfig.find(a => a.id === selectedAgentId);
+  const agent = getAgentById(selectedAgentId);
   if (!agent) return;
   const state = agentStates[selectedAgentId] || { status: 'offline' };
   const logs = agentLogs[selectedAgentId] || [];
   const tools = agentToolCounts[selectedAgentId] || {};
+  const displayName = getDisplayName(agent);
 
   // Title
-  document.getElementById('agent-detail-title').textContent = agent.name.toUpperCase();
+  document.getElementById('agent-detail-title').textContent = displayName.toUpperCase();
 
   // Header
   const isActive = state.status === 'active';
   document.getElementById('agent-detail-header').innerHTML = `
     <div class="detail-orb ${isActive ? 'glow' : ''}" style="background: ${agent.color}; --c: ${agent.color}">${agent.abbreviation}</div>
     <div class="detail-agent-info">
-      <div class="detail-agent-name">${agent.name}</div>
-      <div class="detail-agent-dept">${agent.department}</div>
+      <div class="detail-agent-name">${displayName}</div>
+      <div class="detail-agent-dept">${agent.project}</div>
+      <div class="detail-agent-cwd">${agent.cwd || ''}</div>
     </div>
     <span class="detail-status-badge ${state.status}">${state.status.toUpperCase()}</span>
   `;
@@ -1164,16 +1359,13 @@ function recordAgentEvent(agentId, oldStatus, newStatus, tool, task) {
   if (!agentLogs[agentId]) agentLogs[agentId] = [];
   const timeStr = `${Math.floor((Date.now() - (window._startTime || Date.now())) / 1000)}s`;
   agentLogs[agentId].unshift({ timeStr, oldStatus, newStatus, tool, task });
-  // Keep max 100 entries per agent
   if (agentLogs[agentId].length > 100) agentLogs[agentId].length = 100;
 
-  // Track tool counts
   if (tool) {
     if (!agentToolCounts[agentId]) agentToolCounts[agentId] = {};
     agentToolCounts[agentId][tool] = (agentToolCounts[agentId][tool] || 0) + 1;
   }
 
-  // Update detail panel if this agent is selected
   if (selectedAgentId === agentId) renderAgentDetail();
 }
 
@@ -1198,8 +1390,8 @@ function getTimeSince(isoDate) {
 
 function addLogEntry(agentId, oldStatus, newStatus, tool) {
   const timeStr = `${Math.floor((Date.now() - (window._startTime || Date.now())) / 1000)}s`;
-  const agent = agentConfig.find(a => a.id === agentId);
-  const agentName = agent ? agent.name : `@${agentId}`;
+  const agent = getAgentById(agentId);
+  const agentName = agent ? getDisplayName(agent) : `@${agentId}`;
 
   let text = `<span class="time">${timeStr}</span> <span class="marker">[*]</span> <span class="agent-ref">${agentName}</span> <span class="transition">${oldStatus.toUpperCase()} > ${newStatus.toUpperCase()}</span>`;
   if (tool) text += ` <span class="tool-name">${tool}</span>`;
@@ -1213,8 +1405,7 @@ function addLogEntry(agentId, oldStatus, newStatus, tool) {
 
 function updateStats() {
   let active = 0, idle = 0, offline = 0;
-  // Count from all known agents (config + any in state)
-  const allIds = new Set([...agentConfig.map(a => a.id), ...Object.keys(agentStates)]);
+  const allIds = new Set([...agentRegistry.map(a => a.agentId), ...Object.keys(agentStates)]);
   for (const id of allIds) {
     const state = agentStates[id];
     if (!state || state.status === 'offline') offline++;
@@ -1222,7 +1413,9 @@ function updateStats() {
     else if (state.status === 'idle') idle++;
   }
   const total = allIds.size;
-  teamStatsEl.innerHTML = `[ <span class="stat-active">${active} ACTIVE</span> | <span class="stat-idle">${idle} IDLE</span> | ${offline} OFFLINE | ${total} TOTAL ]`;
+  const pm = cachedProjectMap || buildProjectMap();
+  const projectCount = Object.keys(pm).length;
+  teamStatsEl.innerHTML = `[ <span class="stat-projects">${projectCount} PROJECT${projectCount !== 1 ? 'S' : ''}</span> | <span class="stat-active">${active} ACTIVE</span> | <span class="stat-idle">${idle} IDLE</span> | ${offline} OFFLINE | ${total} TOTAL ]`;
 }
 
 function updateView(agentId) {
@@ -1253,46 +1446,55 @@ function connect() {
     const msg = JSON.parse(event.data);
 
     if (msg.type === 'init') {
-      agentConfig = msg.config;
+      agentRegistry = msg.config;
       agentStates = msg.states;
+      invalidateLayout();
       renderCurrentLayout();
       updateStats();
     }
 
     if (msg.type === 'config_update') {
-      agentConfig = msg.config;
+      agentRegistry = msg.config;
+      invalidateLayout();
       renderCurrentLayout();
       updateStats();
     }
 
     if (msg.type === 'update') {
       const agent = msg.agent;
+      // Support both new (agentId) and old (id) field names
+      const agentId = agent.agentId || agent.id;
+      if (!agentId) return; // skip malformed updates
 
-      // If this agent isn't in config yet, it's a dynamically registered agent
-      // (config_update may arrive after the first state update)
-      if (!agentConfig.find(a => a.id === agent.id)) {
-        agentConfig.push({
-          id: agent.id,
-          name: `@${agent.id}`,
-          abbreviation: agent.id.substring(0, 3).toUpperCase(),
-          department: 'SUBAGENT',
-          color: DYNAMIC_COLORS[agentConfig.length % DYNAMIC_COLORS.length],
-          gridPosition: { row: Math.floor(agentConfig.length / 4), col: (agentConfig.length % 4) * 3 + 2 },
-          dynamic: true
+      // Normalize into new schema
+      agent.agentId = agentId;
+
+      // If this agent isn't in registry yet, add a temporary entry
+      if (!agentRegistry.find(a => a.agentId === agentId)) {
+        const agentType = agent.agentType || 'unknown';
+        agentRegistry.push({
+          agentId,
+          agentType,
+          project: agent.project || 'unknown',
+          cwd: agent.cwd || '',
+          sessionId: agent.sessionId || '',
+          color: TYPE_COLORS[(agentRegistry.length) % TYPE_COLORS.length],
+          abbreviation: agentType.substring(0, 3).toUpperCase()
         });
+        invalidateLayout();
         renderCurrentLayout();
       }
 
-      const oldState = agentStates[agent.id] || { status: 'offline' };
+      const oldState = agentStates[agentId] || { status: 'offline' };
       const oldStatus = oldState.status || 'offline';
 
       if (oldStatus !== agent.status || oldState.currentTool !== agent.currentTool) {
-        addLogEntry(agent.id, oldStatus, agent.status, agent.currentTool);
-        recordAgentEvent(agent.id, oldStatus, agent.status, agent.currentTool, agent.currentTask);
+        addLogEntry(agentId, oldStatus, agent.status, agent.currentTool);
+        recordAgentEvent(agentId, oldStatus, agent.status, agent.currentTool, agent.currentTask);
       }
 
-      agentStates[agent.id] = agent;
-      updateView(agent.id);
+      agentStates[agentId] = agent;
+      updateView(agentId);
       updateStats();
     }
   };
@@ -1300,12 +1502,18 @@ function connect() {
   ws.onclose = () => setTimeout(connect, 2000);
 }
 
+// Fallback color palette for client-side temporary entries
+const TYPE_COLORS = [
+  '#f5a623', '#4a90d9', '#50e3c2', '#7b68ee', '#ff6b6b',
+  '#4cd964', '#b8b8b8', '#e6a8d7', '#ff9f43', '#00d2d3',
+  '#6c5ce7', '#fd79a8', '#00cec9', '#e17055', '#74b9ff'
+];
+
 // ============================================================
 // Init
 // ============================================================
 window.addEventListener('resize', renderCurrentLayout);
 
-// Set initial layout from localStorage
 switchLayout(currentLayout);
 animateIso();
 animateGraph();
