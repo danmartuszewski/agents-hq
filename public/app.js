@@ -19,7 +19,7 @@ let messageAnimations = [];       // { fromId, toId, startTime, duration }
 // Phase 6: QoL state
 let searchFilter = '';
 let collapsedProjects = new Set();
-let notificationsMuted = localStorage.getItem('agents-hq-muted') === 'true';
+let notificationsMuted = localStorage.getItem('agents-hq-muted') !== 'false';
 let notificationsPermission = Notification.permission;
 
 // ============================================================
