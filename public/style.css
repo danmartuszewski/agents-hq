@@ -1460,3 +1460,129 @@ body {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ============================================================
+   Phase 2: Message log entries
+   ============================================================ */
+.log-entry.log-message {
+  border-left: 2px solid var(--accent);
+  padding-left: 18px;
+}
+
+.log-entry .msg-marker {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.log-entry .msg-arrow {
+  color: var(--text-dim);
+  margin: 0 4px;
+}
+
+.log-entry .msg-recipient {
+  color: var(--text-content);
+}
+
+.log-entry .msg-preview {
+  color: var(--text-dim);
+  font-style: italic;
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+/* ============================================================
+   Phase 3: Sparkline + tool avg
+   ============================================================ */
+.detail-sparkline-wrap {
+  background: var(--bg-stat);
+  border: 1px solid var(--border-faintest);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+
+.detail-sparkline-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 40px;
+  margin-top: 6px;
+}
+
+.detail-tool-avg {
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Phase 6: Search, Sort, Mute controls
+   ============================================================ */
+#agent-search {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  width: 160px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+#agent-search::placeholder {
+  color: var(--text-dim);
+}
+
+#agent-search:focus {
+  border-color: var(--accent-dim);
+}
+
+.control-btn,
+#mute-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--accent-dim);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  padding: 7px 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+#mute-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+#mute-btn.muted {
+  color: var(--status-offline-text);
+  border-color: var(--status-offline);
+}
+
+/* ============================================================
+   Phase 6: Collapsible project headers
+   ============================================================ */
+.collapse-arrow {
+  display: inline-block;
+  width: 14px;
+  font-size: 10px;
+  color: var(--text-dim);
+  transition: transform 0.2s;
+}
+
+.project-agent-count {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-dim);
+  margin-left: 8px;
+  letter-spacing: 0;
+}

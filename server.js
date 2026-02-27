@@ -14,6 +14,13 @@ const STATE_DIR = path.join(__dirname, 'state', 'agents');
 // Agent registry: keyed by agentId, grows as agents report in
 let agentRegistry = {};
 
+// Per-agent tool timing: { agentId: { tool, startTime } }
+const agentToolTimers = {};
+
+// Inter-agent message log (ring buffer, max 200)
+const messageLog = [];
+const MAX_MESSAGES = 200;
+
 // Consistent color per agent type
 const typeColorMap = {};
 const TYPE_COLORS = [
@@ -86,10 +93,15 @@ app.get('/api/agents', (req, res) => {
   res.json(states);
 });
 
+// Get message history
+app.get('/api/messages', (req, res) => {
+  res.json(messageLog);
+});
+
 // Update agent status via HTTP
 app.post('/api/agent/:id/status', (req, res) => {
   const id = decodeURIComponent(req.params.id);
-  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId } = req.body;
+  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, hookEvent, toolDetail, toolName: postToolName } = req.body;
   // Sanitize for filename: keep uniqueness but make filesystem-safe
   const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_');
   const filePath = path.join(STATE_DIR, `${safeFilename}.json`);
@@ -107,11 +119,32 @@ app.post('/api/agent/:id/status', (req, res) => {
   }
   const { agent, isNew, projectChanged } = getOrCreateAgent(id, type, cwd, sessionId);
 
+  // Tool timing
+  let lastToolDuration = null;
+  if (hookEvent === 'PreToolUse' && currentTool) {
+    agentToolTimers[id] = { tool: currentTool, startTime: Date.now() };
+  } else if (hookEvent === 'PostToolUse') {
+    const timer = agentToolTimers[id];
+    if (timer) {
+      lastToolDuration = Date.now() - timer.startTime;
+      delete agentToolTimers[id];
+    }
+  }
+
   let existing = {};
   if (fs.existsSync(filePath)) {
     try {
       existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch {}
+  }
+
+  // Session start tracking
+  let sessionStart = existing.sessionStart || null;
+  if (status === 'active' && !sessionStart) {
+    sessionStart = new Date().toISOString();
+  }
+  if (status === 'offline') {
+    sessionStart = null;
   }
 
   const updated = {
@@ -124,12 +157,32 @@ app.post('/api/agent/:id/status', (req, res) => {
     status: status || existing.status || 'offline',
     currentTask: currentTask !== undefined ? currentTask : existing.currentTask,
     currentTool: currentTool !== undefined ? currentTool : existing.currentTool,
-    lastActivity: new Date().toISOString()
+    lastActivity: new Date().toISOString(),
+    sessionStart
   };
 
   if (lastMessage) updated.lastMessage = lastMessage;
+  if (toolDetail) updated.toolDetail = toolDetail;
+  if (lastToolDuration !== null) updated.lastToolDuration = lastToolDuration;
+  if (hookEvent === 'PostToolUse' && postToolName) updated.lastCompletedTool = postToolName;
 
   fs.writeFileSync(filePath, JSON.stringify(updated, null, 2));
+
+  // Detect inter-agent messages (SendMessage via PreToolUse)
+  if (hookEvent === 'PreToolUse' && currentTool === 'SendMessage' && toolDetail && toolDetail.meta) {
+    const msgEntry = {
+      time: new Date().toISOString(),
+      fromId: id,
+      toId: toolDetail.meta.recipient || '',
+      type: toolDetail.meta.msgType || 'message',
+      summary: toolDetail.meta.summary || '',
+      content: (toolDetail.meta.content || '').substring(0, 300)
+    };
+    messageLog.push(msgEntry);
+    if (messageLog.length > MAX_MESSAGES) messageLog.shift();
+
+    broadcast({ type: 'agent_message', message: msgEntry });
+  }
 
   // Broadcast updated config if agent is new or project changed
   if (isNew || projectChanged) {
@@ -198,6 +251,7 @@ app.post('/api/reset', (req, res) => {
   agentRegistry = {};
   Object.keys(typeColorMap).forEach(k => delete typeColorMap[k]);
   typeColorIndex = 0;
+  messageLog.length = 0;
   broadcast({ type: 'init', config: [], states: {} });
   res.json({ ok: true });
 });
@@ -227,6 +281,8 @@ wss.on('connection', (ws) => {
   // Strip internal _filename before sending to client
   for (const s of Object.values(states)) delete s._filename;
   ws.send(JSON.stringify({ type: 'init', config: getRegistryArray(), states }));
+  // Also send message history
+  ws.send(JSON.stringify({ type: 'message_history', messages: messageLog }));
 });
 
 function broadcast(msg) {
@@ -283,6 +339,7 @@ setInterval(() => {
     if (newStatus) {
       state.status = newStatus;
       state.currentTool = null;
+      if (newStatus === 'offline') state.sessionStart = null;
       const filename = state._filename || `${id}.json`;
       delete state._filename;
       const filePath = path.join(STATE_DIR, filename);

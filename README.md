@@ -91,10 +91,12 @@ bash scripts/report-status.sh c-001 active "Reviewing strategy" "Read" coder /pr
 The server watches `state/agents/` for file changes and pushes updates to browsers over WebSocket.
 
 ```
-GET  /api/config              # agent registry (grows as agents report in)
-GET  /api/agents              # all agent states
-POST /api/agent/:id/status    # update an agent's status
-POST /api/reset               # clear all state and registry
+GET  /api/config                    # agent registry (grows as agents report in)
+GET  /api/agents                    # all agent states
+POST /api/agent/:id/status          # update an agent's status
+POST /api/cleanup/offline-agents    # remove all offline agents
+POST /api/cleanup/offline-projects  # remove projects where every agent is offline
+POST /api/reset                     # clear all state and registry
 ```
 
 POST body for status updates:

@@ -10,6 +10,91 @@ const http = require('http');
 const DASHBOARD_URL = process.env.AGENTS_HQ_URL || 'http://localhost:3000';
 const HOOK_EVENT = process.argv[2] || '';
 
+function extractToolDetail(toolName, toolInput) {
+  if (!toolName) return { summary: '', meta: {} };
+
+  switch (toolName) {
+    case 'SendMessage': {
+      const recipient = toolInput.recipient || toolInput.target_agent_id || '';
+      const msgType = toolInput.type || 'message';
+      const content = (toolInput.content || '').substring(0, 300);
+      const summary = toolInput.summary || content.substring(0, 80);
+      return {
+        summary: `${msgType} -> ${recipient}: ${summary}`.substring(0, 120),
+        meta: { recipient, msgType, content, summary }
+      };
+    }
+    case 'TaskCreate': {
+      const subject = (toolInput.subject || '').substring(0, 100);
+      const desc = (toolInput.description || '').substring(0, 200);
+      return {
+        summary: `Create: ${subject}`.substring(0, 120),
+        meta: { subject, description: desc }
+      };
+    }
+    case 'TaskUpdate': {
+      const taskId = toolInput.taskId || '';
+      const status = toolInput.status || '';
+      return {
+        summary: `Update task ${taskId}${status ? ': ' + status : ''}`.substring(0, 120),
+        meta: { taskId, status }
+      };
+    }
+    case 'Read': {
+      const fp = toolInput.file_path || '';
+      return { summary: fp.substring(0, 120), meta: { file_path: fp } };
+    }
+    case 'Write': {
+      const fp = toolInput.file_path || '';
+      return { summary: `Write ${fp}`.substring(0, 120), meta: { file_path: fp } };
+    }
+    case 'Edit': {
+      const fp = toolInput.file_path || '';
+      return { summary: `Edit ${fp}`.substring(0, 120), meta: { file_path: fp } };
+    }
+    case 'Bash': {
+      const cmd = (toolInput.command || '').substring(0, 120);
+      return { summary: cmd, meta: { command: cmd } };
+    }
+    case 'Grep': {
+      const pattern = toolInput.pattern || '';
+      const gPath = toolInput.path || '.';
+      return {
+        summary: `grep "${pattern}" ${gPath}`.substring(0, 120),
+        meta: { pattern, path: gPath }
+      };
+    }
+    case 'Glob': {
+      const pattern = toolInput.pattern || '';
+      return { summary: `glob ${pattern}`.substring(0, 120), meta: { pattern } };
+    }
+    case 'WebSearch': {
+      const query = toolInput.query || '';
+      return { summary: `Search: ${query}`.substring(0, 120), meta: { query } };
+    }
+    case 'WebFetch': {
+      const url = toolInput.url || '';
+      return { summary: `Fetch: ${url}`.substring(0, 120), meta: { url } };
+    }
+    case 'Task': {
+      const desc = toolInput.description || toolInput.prompt || '';
+      return { summary: `Subagent: ${desc}`.substring(0, 120), meta: { description: desc } };
+    }
+    default: {
+      const fallback = (
+        toolInput.command ||
+        toolInput.pattern ||
+        toolInput.file_path ||
+        toolInput.query ||
+        toolInput.prompt ||
+        toolInput.description ||
+        ''
+      ).substring(0, 120);
+      return { summary: fallback, meta: {} };
+    }
+  }
+}
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
@@ -24,7 +109,6 @@ process.stdin.on('end', () => {
   const isSubagent = !!data.agent_id;
   const agentType = data.agent_type || (isSubagent ? null : 'lead');
   const agentId = data.agent_id || data.session_id || '';
-  // Hooks run in the project directory, so process.cwd() is a reliable fallback
   const cwd = data.cwd || process.cwd();
   const sessionId = data.session_id || '';
   const toolName = data.tool_name || '';
@@ -33,7 +117,6 @@ process.stdin.on('end', () => {
 
   if (!agentId) process.exit(0);
 
-  // URL-encode the raw ID to make it path-safe without losing uniqueness
   const safeId = encodeURIComponent(agentId);
 
   let body;
@@ -46,7 +129,8 @@ process.stdin.on('end', () => {
         currentTool: null,
         agentId,
         cwd,
-        sessionId
+        sessionId,
+        hookEvent: 'SubagentStart'
       };
       if (agentType) body.agentType = agentType;
       break;
@@ -58,37 +142,33 @@ process.stdin.on('end', () => {
         currentTool: null,
         lastMessage: lastMsg,
         cwd,
-        sessionId
+        sessionId,
+        hookEvent: 'SubagentStop'
       };
       if (agentType) body.agentType = agentType;
       break;
 
-    case 'PreToolUse':
-      // Extract a short task description from tool_input
-      const taskSummary = (
-        toolInput.command ||
-        toolInput.pattern ||
-        toolInput.file_path ||
-        toolInput.query ||
-        toolInput.prompt ||
-        toolInput.description ||
-        ''
-      ).substring(0, 120);
-
+    case 'PreToolUse': {
+      const detail = extractToolDetail(toolName, toolInput);
       body = {
         status: 'active',
         currentTool: toolName,
-        currentTask: taskSummary || undefined,
+        currentTask: detail.summary || undefined,
+        toolDetail: detail,
+        hookEvent: 'PreToolUse',
         cwd,
         sessionId
       };
       if (agentType) body.agentType = agentType;
       break;
+    }
 
     case 'PostToolUse':
       body = {
         status: 'active',
         currentTool: null,
+        toolName,
+        hookEvent: 'PostToolUse',
         cwd,
         sessionId
       };
@@ -99,7 +179,6 @@ process.stdin.on('end', () => {
       process.exit(0);
   }
 
-  // POST to dashboard using agent_id (or session_id for main) as the URL param
   const url = new URL(`/api/agent/${safeId}/status`, DASHBOARD_URL);
   const payload = JSON.stringify(body);
 
@@ -111,10 +190,9 @@ process.stdin.on('end', () => {
     }
   });
 
-  req.on('error', () => {}); // silently ignore connection errors
+  req.on('error', () => {});
   req.write(payload);
   req.end(() => process.exit(0));
 
-  // Timeout safety - don't block Claude Code
   setTimeout(() => process.exit(0), 2000);
 });
