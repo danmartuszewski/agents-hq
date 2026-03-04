@@ -147,7 +147,7 @@ function sortAgents(agents) {
 // ============================================================
 // Theme Switcher
 // ============================================================
-let currentTheme = localStorage.getItem('agents-hq-theme') || 'matrix';
+let currentTheme = localStorage.getItem('agents-hq-theme') || 'neon';
 
 function applyTheme(name, skipRender) {
   currentTheme = name;

@@ -1,6 +1,14 @@
-# Agents HQ
+<p align="center">
+  <img src="assets/icon.svg" height="128">
+</p>
 
-A dashboard that shows what your Claude Code agents are doing in real time. You spin up a team (researcher, coder, tester, whatever) and this gives you a live floor view of each one - what tool it's running, what it's working on, when it goes idle, when it finishes.
+<h1 align="center">Agents HQ</h1>
+
+<p align="center">
+  See what every Claude Code instance is doing.
+</p>
+
+A real-time dashboard for your Claude Code agents. You spin up a team (researcher, coder, tester, whatever) and this gives you a live floor view of each one - what tool it's running, what it's working on, when it goes idle, when it finishes.
 
 Agents are grouped by project (derived from `cwd`) and by type. The dashboard builds itself as agents report in, no config needed. Main Claude Code sessions show up too, not just subagents.
 
