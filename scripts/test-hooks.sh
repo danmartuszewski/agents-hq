@@ -7,17 +7,30 @@ HOOKS="$(dirname "$0")/../.claude/hooks/agent-tracker.js"
 
 CWD_1="/home/user/projects/my-api"
 CWD_2="/home/user/projects/frontend-app"
+CWD_3="/home/user/projects/docs-site"
 
 send() {
   echo "$2" | node "$HOOKS" "$1"
 }
 
 echo "Testing hook integration against $DASHBOARD_URL"
-echo "Simulating agents across two projects: my-api and frontend-app"
+echo "Simulating agents across three projects: my-api, frontend-app, and docs-site"
 echo ""
 
 # === Phase 1: Team boots up ===
 echo "--- Phase 1: Team starting up ---"
+
+echo "  [+] lead starting (my-api)..."
+send SubagentStart "{\"session_id\":\"sess-001\",\"cwd\":\"$CWD_1\"}"
+sleep 1
+
+echo "  [+] lead starting (frontend-app)..."
+send SubagentStart "{\"session_id\":\"sess-002\",\"cwd\":\"$CWD_2\"}"
+sleep 1
+
+echo "  [+] lead starting (docs-site)..."
+send SubagentStart "{\"session_id\":\"sess-003\",\"cwd\":\"$CWD_3\"}"
+sleep 1
 
 echo "  [+] researcher starting (my-api)..."
 send SubagentStart "{\"agent_id\":\"r-001\",\"agent_type\":\"researcher\",\"cwd\":\"$CWD_1\",\"session_id\":\"sess-001\"}"
@@ -45,6 +58,14 @@ sleep 1
 
 echo "  [+] coder #2 starting (frontend-app)..."
 send SubagentStart "{\"agent_id\":\"c-002\",\"agent_type\":\"coder\",\"cwd\":\"$CWD_2\",\"session_id\":\"sess-002\"}"
+sleep 1
+
+echo "  [+] writer starting (docs-site)..."
+send SubagentStart "{\"agent_id\":\"w-001\",\"agent_type\":\"writer\",\"cwd\":\"$CWD_3\",\"session_id\":\"sess-003\"}"
+sleep 1
+
+echo "  [+] researcher #3 starting (docs-site)..."
+send SubagentStart "{\"agent_id\":\"r-003\",\"agent_type\":\"researcher\",\"cwd\":\"$CWD_3\",\"session_id\":\"sess-003\"}"
 sleep 1
 
 # === Phase 2: Research phase ===
@@ -89,6 +110,22 @@ sleep 0.5
 
 echo "  [*] researcher #2: WebSearch done"
 send PostToolUse "{\"agent_id\":\"r-002\",\"agent_type\":\"researcher\",\"tool_name\":\"WebSearch\",\"cwd\":\"$CWD_2\"}"
+sleep 0.5
+
+echo "  [*] researcher #3: Grep - existing docs structure"
+send PreToolUse "{\"agent_id\":\"r-003\",\"agent_type\":\"researcher\",\"tool_name\":\"Grep\",\"tool_input\":{\"pattern\":\"## API|## Auth|## Getting Started\",\"file_path\":\"/docs\"},\"cwd\":\"$CWD_3\"}"
+sleep 1
+
+echo "  [*] writer: Read - current API docs"
+send PreToolUse "{\"agent_id\":\"w-001\",\"agent_type\":\"writer\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/docs/api-reference.md\"},\"cwd\":\"$CWD_3\"}"
+sleep 1
+
+echo "  [*] researcher #3: Grep done"
+send PostToolUse "{\"agent_id\":\"r-003\",\"agent_type\":\"researcher\",\"tool_name\":\"Grep\",\"cwd\":\"$CWD_3\"}"
+sleep 0.5
+
+echo "  [*] writer: Read done"
+send PostToolUse "{\"agent_id\":\"w-001\",\"agent_type\":\"writer\",\"tool_name\":\"Read\",\"cwd\":\"$CWD_3\"}"
 sleep 0.5
 
 # === Phase 3: Implementation ===
@@ -149,6 +186,34 @@ sleep 0.5
 
 echo "  [*] planner: Read done"
 send PostToolUse "{\"agent_id\":\"p-001\",\"agent_type\":\"planner\",\"tool_name\":\"Read\",\"cwd\":\"$CWD_1\"}"
+sleep 0.5
+
+echo "  [*] writer: Write - auth docs page"
+send PreToolUse "{\"agent_id\":\"w-001\",\"agent_type\":\"writer\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/docs/authentication.md\",\"description\":\"Authentication guide with JWT examples\"},\"cwd\":\"$CWD_3\"}"
+sleep 1
+
+echo "  [*] researcher #3: Read - auth middleware source"
+send PreToolUse "{\"agent_id\":\"r-003\",\"agent_type\":\"researcher\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/src/middleware/auth.ts\"},\"cwd\":\"$CWD_3\"}"
+sleep 1
+
+echo "  [*] researcher #3: Read done"
+send PostToolUse "{\"agent_id\":\"r-003\",\"agent_type\":\"researcher\",\"tool_name\":\"Read\",\"cwd\":\"$CWD_3\"}"
+sleep 0.5
+
+echo "  [-] researcher #3 finished"
+send SubagentStop "{\"agent_id\":\"r-003\",\"agent_type\":\"researcher\",\"last_assistant_message\":\"Analyzed auth middleware source and existing docs. Identified gaps in token refresh and error handling documentation.\",\"cwd\":\"$CWD_3\"}"
+sleep 1
+
+echo "  [*] writer: Write done"
+send PostToolUse "{\"agent_id\":\"w-001\",\"agent_type\":\"writer\",\"tool_name\":\"Write\",\"cwd\":\"$CWD_3\"}"
+sleep 0.5
+
+echo "  [*] writer: Edit - update sidebar nav"
+send PreToolUse "{\"agent_id\":\"w-001\",\"agent_type\":\"writer\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/docs/sidebar.json\",\"description\":\"Add authentication page to sidebar navigation\"},\"cwd\":\"$CWD_3\"}"
+sleep 1
+
+echo "  [*] writer: Edit done"
+send PostToolUse "{\"agent_id\":\"w-001\",\"agent_type\":\"writer\",\"tool_name\":\"Edit\",\"cwd\":\"$CWD_3\"}"
 sleep 0.5
 
 echo "  [-] planner finished"
@@ -271,9 +336,25 @@ echo "  [-] coder #2 finished"
 send SubagentStop "{\"agent_id\":\"c-002\",\"agent_type\":\"coder\",\"last_assistant_message\":\"Implemented React auth context, login/logout flow, and protected route wrapper.\",\"cwd\":\"$CWD_2\"}"
 sleep 1
 
+echo "  [-] writer finished"
+send SubagentStop "{\"agent_id\":\"w-001\",\"agent_type\":\"writer\",\"last_assistant_message\":\"Wrote authentication docs with JWT examples, token refresh guide, and error handling reference. Updated sidebar navigation.\",\"cwd\":\"$CWD_3\"}"
+sleep 1
+
 echo "  [-] coder finished"
 send SubagentStop "{\"agent_id\":\"c-001\",\"agent_type\":\"coder\",\"last_assistant_message\":\"Implemented JWT auth middleware, updated 12 routes, added refresh token support. All tests passing.\",\"cwd\":\"$CWD_1\"}"
+sleep 1
+
+echo "  [-] lead finished (docs-site)"
+send SubagentStop "{\"session_id\":\"sess-003\",\"last_assistant_message\":\"Documentation site updated with auth guides and API reference.\",\"cwd\":\"$CWD_3\"}"
+sleep 1
+
+echo "  [-] lead finished (frontend-app)"
+send SubagentStop "{\"session_id\":\"sess-002\",\"last_assistant_message\":\"Frontend auth integration complete with context provider and protected routes.\",\"cwd\":\"$CWD_2\"}"
+sleep 1
+
+echo "  [-] lead finished (my-api)"
+send SubagentStop "{\"session_id\":\"sess-001\",\"last_assistant_message\":\"API auth system fully implemented with JWT middleware, refresh tokens, and 94% test coverage.\",\"cwd\":\"$CWD_1\"}"
 
 echo ""
-echo "Done. All agents finished across 2 projects."
+echo "Done. All agents finished across 3 projects."
 echo "Check the dashboard at $DASHBOARD_URL"
