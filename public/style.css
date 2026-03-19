@@ -560,6 +560,53 @@ body {
   font-weight: 700;
 }
 
+/* ---- Notify Switcher ---- */
+#notify-switcher {
+  position: relative;
+}
+
+#notify-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--accent-dim);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  padding: 7px 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+#notify-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+#notify-btn.notify-off {
+  color: var(--status-offline-text);
+  border-color: var(--status-offline);
+}
+
+#notify-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 1000;
+  min-width: 200px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+#notify-dropdown.open {
+  display: block;
+}
+
 /* ---- Cleanup Switcher ---- */
 #cleanup-switcher {
   position: relative;
@@ -635,17 +682,23 @@ body {
   pointer-events: none;
 }
 
-.cleanup-option.auto-clean-option {
+.cleanup-option.auto-clean-option,
+.cleanup-option.notify-level-option,
+.cleanup-option.notify-sound-option {
   padding-left: 28px;
   position: relative;
 }
 
-.cleanup-option.auto-clean-option.selected {
+.cleanup-option.auto-clean-option.selected,
+.cleanup-option.notify-level-option.selected,
+.cleanup-option.notify-sound-option.selected {
   color: var(--accent);
   font-weight: 600;
 }
 
-.cleanup-option.auto-clean-option.selected::before {
+.cleanup-option.auto-clean-option.selected::before,
+.cleanup-option.notify-level-option.selected::before,
+.cleanup-option.notify-sound-option.selected::before {
   content: '';
   position: absolute;
   left: 12px;
@@ -1648,11 +1701,6 @@ body {
 #mute-btn:hover {
   color: var(--accent);
   border-color: var(--accent-dim);
-}
-
-#mute-btn.muted {
-  color: var(--status-offline-text);
-  border-color: var(--status-offline);
 }
 
 /* ============================================================

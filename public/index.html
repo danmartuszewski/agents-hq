@@ -12,7 +12,19 @@
     <div id="team-stats" class="team-stats">[ 0 ACTIVE | 0 IDLE | 0 OFFLINE | 0 TOTAL ]</div>
     <div id="controls">
       <input type="text" id="agent-search" placeholder="Search agents..." autocomplete="off" spellcheck="false">
-      <button id="mute-btn" class="control-btn">MUTE</button>
+      <div id="notify-switcher">
+        <button id="notify-btn">NOTIFY</button>
+        <div id="notify-dropdown">
+          <div class="cleanup-section-title">NOTIFY ON</div>
+          <div class="cleanup-option notify-level-option selected" data-level="crashes">Crashes only</div>
+          <div class="cleanup-option notify-level-option" data-level="status">All status changes</div>
+          <div class="cleanup-option notify-level-option" data-level="off">Off</div>
+          <div class="theme-divider"></div>
+          <div class="cleanup-section-title">SOUND</div>
+          <div class="cleanup-option notify-sound-option selected" data-sound="on">On</div>
+          <div class="cleanup-option notify-sound-option" data-sound="off">Off</div>
+        </div>
+      </div>
       <div id="cleanup-switcher">
         <button id="cleanup-btn">CLEAN</button>
         <div id="cleanup-dropdown">

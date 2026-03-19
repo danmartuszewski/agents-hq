@@ -19,7 +19,8 @@ let messageAnimations = [];       // { fromId, toId, startTime, duration }
 // Phase 6: QoL state
 let searchFilter = '';
 let collapsedProjects = new Set();
-let notificationsMuted = localStorage.getItem('agents-hq-muted') !== 'false';
+let notifyLevel = localStorage.getItem('agents-hq-notify-level') || 'crashes'; // 'off', 'crashes', 'status'
+let notifySound = localStorage.getItem('agents-hq-notify-sound') !== 'off'; // default on
 let notificationsPermission = Notification.permission;
 
 // ============================================================
@@ -169,11 +170,14 @@ function applyTheme(name, skipRender) {
 document.getElementById('theme-btn').addEventListener('click', (e) => {
   e.stopPropagation();
   document.getElementById('theme-dropdown').classList.toggle('open');
+  document.getElementById('cleanup-dropdown').classList.remove('open');
+  document.getElementById('notify-dropdown').classList.remove('open');
 });
 
 document.addEventListener('click', () => {
   document.getElementById('theme-dropdown').classList.remove('open');
   document.getElementById('cleanup-dropdown').classList.remove('open');
+  document.getElementById('notify-dropdown').classList.remove('open');
 });
 
 document.querySelectorAll('.theme-option').forEach(opt => {
@@ -193,8 +197,8 @@ applyTheme(currentTheme, true);
 document.getElementById('cleanup-btn').addEventListener('click', (e) => {
   e.stopPropagation();
   document.getElementById('cleanup-dropdown').classList.toggle('open');
-  // Close theme dropdown if open
   document.getElementById('theme-dropdown').classList.remove('open');
+  document.getElementById('notify-dropdown').classList.remove('open');
 });
 
 document.querySelectorAll('.cleanup-option[data-action]').forEach(opt => {
@@ -288,18 +292,55 @@ document.getElementById('agent-search').addEventListener('input', (e) => {
 });
 
 
-const muteBtn = document.getElementById('mute-btn');
-function updateMuteBtn() {
-  muteBtn.textContent = notificationsMuted ? 'UNMUTE' : 'MUTE';
-  muteBtn.classList.toggle('muted', notificationsMuted);
+// ============================================================
+// Notify Switcher
+// ============================================================
+function updateNotifyUI() {
+  const btn = document.getElementById('notify-btn');
+  document.querySelectorAll('.notify-level-option').forEach(opt => {
+    opt.classList.toggle('selected', opt.dataset.level === notifyLevel);
+  });
+  document.querySelectorAll('.notify-sound-option').forEach(opt => {
+    opt.classList.toggle('selected', opt.dataset.sound === (notifySound ? 'on' : 'off'));
+  });
+  if (notifyLevel === 'off') {
+    btn.classList.add('notify-off');
+    btn.textContent = 'NOTIFY';
+  } else {
+    btn.classList.remove('notify-off');
+    const labels = { crashes: 'CRASHES', status: 'STATUS' };
+    btn.textContent = `NOTIFY · ${labels[notifyLevel]}`;
+  }
 }
-updateMuteBtn();
-muteBtn.addEventListener('click', (e) => {
+
+document.getElementById('notify-btn').addEventListener('click', (e) => {
   e.stopPropagation();
-  notificationsMuted = !notificationsMuted;
-  localStorage.setItem('agents-hq-muted', notificationsMuted);
-  updateMuteBtn();
+  document.getElementById('notify-dropdown').classList.toggle('open');
+  document.getElementById('theme-dropdown').classList.remove('open');
+  document.getElementById('cleanup-dropdown').classList.remove('open');
 });
+
+document.querySelectorAll('.notify-level-option').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    notifyLevel = opt.dataset.level;
+    localStorage.setItem('agents-hq-notify-level', notifyLevel);
+    updateNotifyUI();
+    document.getElementById('notify-dropdown').classList.remove('open');
+  });
+});
+
+document.querySelectorAll('.notify-sound-option').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    notifySound = opt.dataset.sound === 'on';
+    localStorage.setItem('agents-hq-notify-sound', notifySound ? 'on' : 'off');
+    updateNotifyUI();
+    document.getElementById('notify-dropdown').classList.remove('open');
+  });
+});
+
+updateNotifyUI();
 
 // Request notification permission on first load
 if (Notification.permission === 'default') {
@@ -1918,30 +1959,48 @@ function addMessageLogEntry(msg) {
   while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
 }
 
-// Phase 6: Offline notification
-function notifyAgentOffline(agentId, agentName) {
-  if (notificationsMuted) return;
-
-  // Audio beep via Web Audio API
+// Phase 6: Agent notifications
+function playNotifyBeep(freq = 440) {
+  if (!notifySound) return;
   try {
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.connect(gain);
     gain.connect(audioCtx.destination);
-    osc.frequency.value = 440;
+    osc.frequency.value = freq;
     gain.gain.value = 0.1;
     osc.start();
     gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
     osc.stop(audioCtx.currentTime + 0.3);
   } catch (e) { /* ignore audio errors */ }
+}
 
-  // Desktop notification
+function sendDesktopNotification(title, body, tag) {
   if (Notification.permission === 'granted') {
-    new Notification('Agent Offline', {
-      body: `${agentName} went offline unexpectedly`,
-      tag: `offline-${agentId}`
-    });
+    new Notification(title, { body, tag });
+  }
+}
+
+function notifyAgentEvent(agentId, agentName, oldStatus, newStatus) {
+  if (notifyLevel === 'off') return;
+
+  const isCrash = oldStatus === 'active' && newStatus === 'offline';
+
+  if (notifyLevel === 'crashes' && !isCrash) return;
+
+  // notifyLevel === 'status' catches all transitions
+  if (isCrash) {
+    playNotifyBeep(440);
+    sendDesktopNotification('Agent Offline', `${agentName} went offline unexpectedly`, `offline-${agentId}`);
+  } else if (newStatus === 'offline') {
+    playNotifyBeep(330);
+    sendDesktopNotification('Agent Offline', `${agentName} is now offline`, `offline-${agentId}`);
+  } else if (newStatus === 'active' && oldStatus !== 'active') {
+    playNotifyBeep(660);
+    sendDesktopNotification('Agent Active', `${agentName} is now active`, `active-${agentId}`);
+  } else if (newStatus === 'idle') {
+    sendDesktopNotification('Agent Idle', `${agentName} is now idle`, `idle-${agentId}`);
   }
 }
 
@@ -2161,11 +2220,11 @@ function connect() {
         }
       }
 
-      // Phase 6: Offline notification (active -> offline, skip idle)
-      if (oldStatus === 'active' && agent.status === 'offline') {
+      // Phase 6: Agent status notification
+      if (oldStatus !== agent.status) {
         const agentInfo = getAgentById(agentId);
         const name = agentInfo ? getDisplayName(agentInfo) : `@${agentId}`;
-        notifyAgentOffline(agentId, name);
+        notifyAgentEvent(agentId, name, oldStatus, agent.status);
       }
 
       agentStates[agentId] = agent;
