@@ -197,7 +197,7 @@ document.getElementById('cleanup-btn').addEventListener('click', (e) => {
   document.getElementById('theme-dropdown').classList.remove('open');
 });
 
-document.querySelectorAll('.cleanup-option').forEach(opt => {
+document.querySelectorAll('.cleanup-option[data-action]').forEach(opt => {
   opt.addEventListener('click', async (e) => {
     e.stopPropagation();
     document.getElementById('cleanup-dropdown').classList.remove('open');
@@ -215,6 +215,69 @@ document.querySelectorAll('.cleanup-option').forEach(opt => {
     }
   });
 });
+
+// ============================================================
+// Auto-Clean
+// ============================================================
+let autoCleanInterval = parseInt(localStorage.getItem('agents-hq-autoclean')) || 0;
+let autoCleanTimer = null;
+
+function updateAutoCleanUI() {
+  const btn = document.getElementById('cleanup-btn');
+  document.querySelectorAll('.auto-clean-option').forEach(opt => {
+    const val = parseInt(opt.dataset.interval);
+    opt.classList.toggle('selected', val === autoCleanInterval);
+  });
+  if (autoCleanInterval > 0) {
+    btn.classList.add('autoclean-active');
+    const label = autoCleanInterval < 3600000
+      ? `${autoCleanInterval / 60000}M`
+      : `${autoCleanInterval / 3600000}H`;
+    btn.textContent = `CLEAN · ${label}`;
+  } else {
+    btn.classList.remove('autoclean-active');
+    btn.textContent = 'CLEAN';
+  }
+}
+
+function startAutoClean() {
+  if (autoCleanTimer) clearInterval(autoCleanTimer);
+  autoCleanTimer = null;
+  if (autoCleanInterval <= 0) return;
+  autoCleanTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/cleanup/offline-agents?olderThan=${autoCleanInterval}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.removed > 0) {
+        appendAutoCleanLog(data.removed);
+      }
+    } catch {}
+  }, 60000); // check every 60s
+}
+
+function appendAutoCleanLog(count) {
+  const now = new Date();
+  const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const logEl = document.getElementById('activity-log');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry log-autoclean';
+  entry.innerHTML = `<span class="time">${time}</span> <span class="marker">[AUTO]</span> Cleaned ${count} offline agent${count !== 1 ? 's' : ''}`;
+  logEl.prepend(entry);
+}
+
+document.querySelectorAll('.auto-clean-option').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    autoCleanInterval = parseInt(opt.dataset.interval);
+    localStorage.setItem('agents-hq-autoclean', autoCleanInterval);
+    updateAutoCleanUI();
+    startAutoClean();
+    document.getElementById('cleanup-dropdown').classList.remove('open');
+  });
+});
+
+updateAutoCleanUI();
+startAutoClean();
 
 // ============================================================
 // Search / Sort / Mute controls (Phase 6)

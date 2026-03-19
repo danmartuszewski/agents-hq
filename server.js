@@ -258,12 +258,19 @@ app.post('/api/agent/:id/status', (req, res) => {
 });
 
 // Remove offline agents (keeps active/idle ones)
+// Optional query param: ?olderThan=ms (only remove agents offline longer than this)
 app.post('/api/cleanup/offline-agents', (req, res) => {
+  const olderThan = parseInt(req.query.olderThan) || 0;
+  const now = Date.now();
   const states = readAllStates();
   let removed = 0;
   const removedIds = new Set();
   for (const [id, state] of Object.entries(states)) {
     if (state.status === 'offline') {
+      if (olderThan > 0) {
+        const elapsed = now - new Date(state.lastActivity).getTime();
+        if (elapsed < olderThan) continue;
+      }
       const filename = state._filename || `${id}.json`;
       try { fs.unlinkSync(path.join(STATE_DIR, filename)); } catch {}
       delete agentRegistry[id];
