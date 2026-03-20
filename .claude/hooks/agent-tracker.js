@@ -183,6 +183,7 @@ process.stdin.on('end', () => {
         agentId,
         cwd,
         sessionId,
+        parentAgentId: data.parent_agent_id || sessionId || '',
         hookEvent: 'SubagentStart'
       };
       if (agentType) body.agentType = agentType;

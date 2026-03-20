@@ -118,6 +118,74 @@ function computeProjectLayout() {
 }
 
 // ============================================================
+// Project Stats
+// ============================================================
+function computeProjectStats(projectName) {
+  const agents = agentRegistry.filter(a => a.project === projectName);
+  const agentIds = agents.map(a => a.agentId);
+  let totalToolCalls = 0, activeCount = 0, idleCount = 0, offlineCount = 0, crashCount = 0;
+  const sessionDurations = [];
+  const toolAgg = {};
+
+  for (const id of agentIds) {
+    const state = agentStates[id] || { status: 'offline' };
+    if (state.status === 'active') activeCount++;
+    else if (state.status === 'idle') idleCount++;
+    else offlineCount++;
+
+    const tc = agentToolCounts[id] || (state.toolCounts || {});
+    for (const [tool, count] of Object.entries(tc)) {
+      toolAgg[tool] = (toolAgg[tool] || 0) + count;
+      totalToolCalls += count;
+    }
+
+    if (state.sessionStart) {
+      sessionDurations.push(Date.now() - new Date(state.sessionStart).getTime());
+    }
+
+    const logs = agentLogs[id] || [];
+    for (const log of logs) {
+      if (log.oldStatus === 'active' && log.newStatus === 'offline') crashCount++;
+    }
+  }
+
+  const topTools = Object.entries(toolAgg).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const avgSessionMs = sessionDurations.length > 0
+    ? sessionDurations.reduce((a, b) => a + b, 0) / sessionDurations.length : 0;
+
+  return { totalAgents: agentIds.length, activeCount, idleCount, offlineCount, totalToolCalls, topTools, avgSessionMs, crashCount };
+}
+
+function formatDuration(ms) {
+  if (ms < 60000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
+  return `${(ms / 3600000).toFixed(1)}h`;
+}
+
+function renderProjectStatsHtml(projName) {
+  const stats = computeProjectStats(projName);
+  const parts = [];
+  if (stats.activeCount > 0) parts.push(`<span class="pstat-active">${stats.activeCount}A</span>`);
+  if (stats.idleCount > 0) parts.push(`<span class="pstat-idle">${stats.idleCount}I</span>`);
+  if (stats.offlineCount > 0) parts.push(`<span class="pstat-offline">${stats.offlineCount}O</span>`);
+  parts.push(`<span class="pstat-tools">${stats.totalToolCalls} tools</span>`);
+  if (stats.avgSessionMs > 0) parts.push(`<span class="pstat-session">avg ${formatDuration(stats.avgSessionMs)}</span>`);
+  if (stats.crashCount > 0) parts.push(`<span class="pstat-crash">${stats.crashCount} crash${stats.crashCount !== 1 ? 'es' : ''}</span>`);
+
+  let html = `<span class="project-stats-row">${parts.join('<span class="pstat-sep">|</span>')}</span>`;
+
+  if (stats.topTools.length > 0) {
+    const maxCount = stats.topTools[0][1];
+    const bars = stats.topTools.map(([name, count]) =>
+      `<span class="pstat-tool-item"><span class="pstat-tool-name">${shortToolName(name)}</span><span class="pstat-tool-bar"><span class="pstat-tool-fill" style="width:${(count / maxCount) * 100}%"></span></span><span class="pstat-tool-count">${count}</span></span>`
+    ).join('');
+    html += `<span class="project-tools-row">${bars}</span>`;
+  }
+
+  return html;
+}
+
+// ============================================================
 // Search/Filter helpers (Phase 6)
 // ============================================================
 function matchesSearch(agent, state) {
@@ -413,6 +481,7 @@ document.querySelectorAll('.layout-btn').forEach(btn => {
 
 function switchLayout(name) {
   currentLayout = name;
+  keyboardSelectedIndex = -1;
   localStorage.setItem('agents-hq-layout', name);
 
   // Update buttons
@@ -432,6 +501,8 @@ function renderCurrentLayout() {
     case 'list': renderList(); break;
     case 'cards': renderCards(); break;
     case 'graph': renderGraph(); break;
+    case 'tree': renderTree(); break;
+    case 'timeline': renderTimeline(); break;
   }
 }
 
@@ -1050,7 +1121,7 @@ function renderList() {
     const isCollapsed = collapsedProjects.has(projName);
     const truncated = projName.length > 30 ? projName.substring(0, 28) + '..' : projName;
     const arrow = isCollapsed ? '\u25b6' : '\u25bc';
-    header.innerHTML = `<span class="collapse-arrow">${arrow}</span> ${truncated.toUpperCase()} <span class="project-agent-count">(${projectAgents.length})</span>`;
+    header.innerHTML = `<span class="collapse-arrow">${arrow}</span> ${truncated.toUpperCase()} <span class="project-agent-count">(${projectAgents.length})</span>${isCollapsed ? '' : '<br>' + renderProjectStatsHtml(projName)}`;
     header.style.cursor = 'pointer';
     header.addEventListener('click', () => {
       if (collapsedProjects.has(projName)) collapsedProjects.delete(projName);
@@ -1143,7 +1214,7 @@ function renderCards() {
     const isCollapsed = collapsedProjects.has(projName);
     const truncated = projName.length > 30 ? projName.substring(0, 28) + '..' : projName;
     const arrow = isCollapsed ? '\u25b6' : '\u25bc';
-    header.innerHTML = `<span class="collapse-arrow">${arrow}</span> ${truncated.toUpperCase()} <span class="project-agent-count">(${projectAgents.length})</span>`;
+    header.innerHTML = `<span class="collapse-arrow">${arrow}</span> ${truncated.toUpperCase()} <span class="project-agent-count">(${projectAgents.length})</span>${isCollapsed ? '' : '<br>' + renderProjectStatsHtml(projName)}`;
     header.style.cursor = 'pointer';
     header.addEventListener('click', () => {
       if (collapsedProjects.has(projName)) collapsedProjects.delete(projName);
@@ -1202,6 +1273,551 @@ function updateCards(agentId) {
   if (old) old.replaceWith(card);
   else renderCards();
 }
+
+// ============================================================
+// Tree View
+// ============================================================
+let collapsedTreeNodes = new Set();
+
+function buildAgentTree() {
+  const nodeMap = {};
+  const roots = [];
+  const orphans = [];
+
+  for (const agent of agentRegistry) {
+    nodeMap[agent.agentId] = { agent, state: agentStates[agent.agentId] || { status: 'offline' }, children: [] };
+  }
+
+  for (const agent of agentRegistry) {
+    const node = nodeMap[agent.agentId];
+    const state = node.state;
+    const parentId = state.parentAgentId;
+    const sessionId = state.sessionId || agent.sessionId;
+    const isLead = agent.agentId === sessionId || agent.agentType === 'lead';
+
+    if (parentId && parentId !== agent.agentId && nodeMap[parentId]) {
+      nodeMap[parentId].children.push(node);
+    } else if (!isLead && sessionId && sessionId !== agent.agentId && nodeMap[sessionId]) {
+      nodeMap[sessionId].children.push(node);
+    } else if (isLead) {
+      roots.push(node);
+    } else {
+      orphans.push(node);
+    }
+  }
+
+  // Sort children by status then type
+  const statusOrder = { active: 0, idle: 1, offline: 2 };
+  const sortNodes = (nodes) => nodes.sort((a, b) => {
+    const sa = statusOrder[a.state.status] || 2;
+    const sb = statusOrder[b.state.status] || 2;
+    return sa - sb || a.agent.agentType.localeCompare(b.agent.agentType);
+  });
+
+  sortNodes(roots);
+  sortNodes(orphans);
+  const sortAll = (node) => { sortNodes(node.children); node.children.forEach(sortAll); };
+  roots.forEach(sortAll);
+
+  return { roots, orphans };
+}
+
+function renderTreeNode(node, depth, container) {
+  const { agent, state, children } = node;
+  const hasChildren = children.length > 0;
+  const isCollapsed = collapsedTreeNodes.has(agent.agentId);
+  const displayName = getDisplayName(agent);
+  const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
+  const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '';
+
+  const row = document.createElement('div');
+  row.className = `tree-node ${state.status}`;
+  row.id = `tree-agent-${agent.agentId}`;
+  row.style.paddingLeft = `${16 + depth * 20}px`;
+
+  const toggleArrow = hasChildren ? (isCollapsed ? '\u25b6' : '\u25bc') : '';
+  const childCount = hasChildren ? `<span class="tree-children-count">(${children.length})</span>` : '';
+
+  row.innerHTML = `
+    <span class="tree-toggle">${toggleArrow}</span>
+    <span class="status-dot"></span>
+    <span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>
+    <span class="tree-agent-name">${displayName}</span>
+    ${childCount}
+    <span class="tree-agent-type">${agent.agentType}</span>
+    ${toolHtml}
+    <span class="time-text">${timeSince}</span>
+  `;
+
+  if (hasChildren) {
+    row.querySelector('.tree-toggle').addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (collapsedTreeNodes.has(agent.agentId)) collapsedTreeNodes.delete(agent.agentId);
+      else collapsedTreeNodes.add(agent.agentId);
+      renderTree();
+    });
+  }
+
+  attachAgentClick(row, agent.agentId);
+  container.appendChild(row);
+
+  if (hasChildren && !isCollapsed) {
+    for (const child of children) {
+      renderTreeNode(child, depth + 1, container);
+    }
+  }
+}
+
+function renderTree() {
+  const container = document.getElementById('tree-container');
+  container.innerHTML = '';
+
+  const filtered = getFilteredAgents();
+  if (filtered.length === 0 && agentRegistry.length === 0) {
+    container.innerHTML = '<div class="tree-empty-state">Waiting for agents...</div>';
+    return;
+  }
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="tree-empty-state">No matching agents</div>';
+    return;
+  }
+
+  const { roots, orphans } = buildAgentTree();
+  const pm = buildProjectMap();
+  const projects = Object.keys(pm).sort();
+
+  const filteredIds = new Set(filtered.map(a => a.agentId));
+
+  for (const projName of projects) {
+    const projRoots = roots.filter(n => n.agent.project === projName);
+    if (projRoots.length === 0) continue;
+
+    const header = document.createElement('div');
+    header.className = 'tree-project-header';
+    const isCollapsed = collapsedProjects.has(projName);
+    const truncated = projName.length > 30 ? projName.substring(0, 28) + '..' : projName;
+    const arrow = isCollapsed ? '\u25b6' : '\u25bc';
+    const agentCount = agentRegistry.filter(a => a.project === projName).length;
+    header.innerHTML = `<span class="collapse-arrow">${arrow}</span> ${truncated.toUpperCase()} <span class="project-agent-count">(${agentCount})</span>`;
+    header.addEventListener('click', () => {
+      if (collapsedProjects.has(projName)) collapsedProjects.delete(projName);
+      else collapsedProjects.add(projName);
+      renderTree();
+    });
+    container.appendChild(header);
+
+    if (isCollapsed) continue;
+
+    for (const root of projRoots) {
+      renderTreeNode(root, 0, container);
+    }
+  }
+
+  if (orphans.length > 0) {
+    const header = document.createElement('div');
+    header.className = 'tree-orphan-header';
+    header.textContent = `ORPHANED AGENTS (${orphans.length})`;
+    container.appendChild(header);
+    for (const orphan of orphans) {
+      renderTreeNode(orphan, 0, container);
+    }
+  }
+}
+
+function updateTree(agentId) {
+  renderTree();
+}
+
+// ============================================================
+// Timeline View (Gantt)
+// ============================================================
+const tlCanvas = document.getElementById('timeline-canvas');
+const tlCtx = tlCanvas.getContext('2d');
+const tlResetBtn = document.getElementById('timeline-reset');
+const tlTransform = { panX: 0, panY: 0, scaleX: 1 };
+
+function buildTimelineSpans() {
+  const spans = {};
+  for (const agent of agentRegistry) {
+    const id = agent.agentId;
+    const state = agentStates[id] || { status: 'offline' };
+    const logs = state.eventLog || [];
+    const agentSpans = [];
+
+    if (logs.length === 0) {
+      if (state.sessionStart) {
+        agentSpans.push({ start: new Date(state.sessionStart).getTime(), end: null, status: state.status });
+      } else if (state.lastActivity) {
+        agentSpans.push({ start: new Date(state.lastActivity).getTime(), end: new Date(state.lastActivity).getTime() + 1000, status: 'offline' });
+      }
+    } else {
+      let currentSpan = null;
+      for (const log of logs) {
+        const time = new Date(log.time).getTime();
+        if (!currentSpan) {
+          currentSpan = { start: time, end: null, status: log.newStatus || 'active' };
+        } else if (log.newStatus && log.newStatus !== currentSpan.status) {
+          currentSpan.end = time;
+          agentSpans.push(currentSpan);
+          currentSpan = { start: time, end: null, status: log.newStatus };
+        }
+      }
+      if (currentSpan) {
+        if (state.status === 'offline' && !currentSpan.end) {
+          currentSpan.end = state.lastActivity ? new Date(state.lastActivity).getTime() : Date.now();
+        }
+        agentSpans.push(currentSpan);
+      }
+    }
+
+    spans[id] = agentSpans;
+  }
+  return spans;
+}
+
+function drawTimeline() {
+  const ctx = tlCtx;
+  const W = tlCanvas.width, H = tlCanvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const tv = getThemeVars();
+
+  if (agentRegistry.length === 0) {
+    drawEmptyState(ctx, W, H, tv);
+    return;
+  }
+
+  const LABEL_W = 160;
+  const HEADER_H = 36;
+  const ROW_H = 32;
+  const PROJECT_H = 28;
+
+  const spans = buildTimelineSpans();
+
+  // Compute time range
+  let minTime = Infinity, maxTime = -Infinity;
+  for (const agentSpans of Object.values(spans)) {
+    for (const s of agentSpans) {
+      if (s.start < minTime) minTime = s.start;
+      const end = s.end || Date.now();
+      if (end > maxTime) maxTime = end;
+    }
+  }
+  if (minTime === Infinity) { minTime = Date.now() - 60000; maxTime = Date.now(); }
+  const timeRange = Math.max(1000, maxTime - minTime);
+
+  // Time-to-X conversion
+  const chartW = W - LABEL_W;
+  const timeToX = (t) => LABEL_W + ((t - minTime) / timeRange) * chartW * tlTransform.scaleX + tlTransform.panX;
+
+  // Build rows grouped by project
+  const pm = buildProjectMap();
+  const projects = Object.keys(pm).sort();
+  const rows = [];
+
+  for (const projName of projects) {
+    const isCollapsed = collapsedProjects.has(projName);
+    rows.push({ type: 'project', name: projName, collapsed: isCollapsed });
+    if (isCollapsed) continue;
+
+    const projectAgents = sortAgents(agentRegistry.filter(a => a.project === projName));
+    for (const agent of projectAgents) {
+      rows.push({ type: 'agent', agent, spans: spans[agent.agentId] || [] });
+    }
+  }
+
+  // Background
+  ctx.fillStyle = tv.glowInner.replace(/[\d.]+\)$/, '0.03)');
+  ctx.fillRect(0, 0, W, H);
+
+  // Draw header
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.fillRect(0, 0, W, HEADER_H);
+  ctx.strokeStyle = tv.lineColor;
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(0, HEADER_H);
+  ctx.lineTo(W, HEADER_H);
+  ctx.stroke();
+
+  // Time axis labels
+  const visibleStartTime = minTime - (tlTransform.panX / (chartW * tlTransform.scaleX)) * timeRange;
+  const visibleDuration = timeRange / tlTransform.scaleX;
+
+  let tickInterval;
+  if (visibleDuration < 120000) tickInterval = 10000;        // 10s
+  else if (visibleDuration < 600000) tickInterval = 60000;   // 1m
+  else if (visibleDuration < 3600000) tickInterval = 300000; // 5m
+  else if (visibleDuration < 14400000) tickInterval = 1800000; // 30m
+  else tickInterval = 3600000; // 1h
+
+  const firstTick = Math.ceil(minTime / tickInterval) * tickInterval;
+  ctx.fillStyle = tv.textDim;
+  ctx.font = '9px "JetBrains Mono", monospace';
+  ctx.textAlign = 'center';
+
+  for (let t = firstTick; t <= maxTime; t += tickInterval) {
+    const x = timeToX(t);
+    if (x < LABEL_W || x > W) continue;
+
+    ctx.fillStyle = tv.textDim;
+    const d = new Date(t);
+    let label;
+    if (tickInterval >= 3600000) label = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    else if (tickInterval >= 60000) label = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    else label = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    ctx.fillText(label, x, 14);
+
+    // Grid line
+    ctx.strokeStyle = tv.lineColor.replace(/[\d.]+\)$/, '0.15)');
+    ctx.beginPath();
+    ctx.moveTo(x, HEADER_H);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+
+  // Now line
+  const nowX = timeToX(Date.now());
+  if (nowX >= LABEL_W && nowX <= W) {
+    ctx.strokeStyle = tv.accent;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(nowX, 0);
+    ctx.lineTo(nowX, H);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = tv.accent;
+    ctx.font = 'bold 8px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('NOW', nowX, HEADER_H - 4);
+  }
+
+  // Draw rows
+  let y = HEADER_H + tlTransform.panY;
+
+  // Status colors from CSS
+  const statusColors = {
+    active: getComputedStyle(document.body).getPropertyValue('--status-active').trim(),
+    idle: getComputedStyle(document.body).getPropertyValue('--status-idle').trim(),
+    offline: getComputedStyle(document.body).getPropertyValue('--status-offline').trim()
+  };
+
+  for (const row of rows) {
+    if (y > H) break;
+
+    if (row.type === 'project') {
+      if (y + PROJECT_H > HEADER_H) {
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.fillRect(0, y, W, PROJECT_H);
+        ctx.fillStyle = tv.accent;
+        ctx.font = 'bold 10px "JetBrains Mono", monospace';
+        ctx.textAlign = 'left';
+        const arrow = row.collapsed ? '\u25b6' : '\u25bc';
+        const truncated = row.name.length > 20 ? row.name.substring(0, 18) + '..' : row.name;
+        ctx.fillText(`${arrow} ${truncated.toUpperCase()}`, 12, y + 18);
+      }
+      y += PROJECT_H;
+      continue;
+    }
+
+    if (y + ROW_H < HEADER_H) { y += ROW_H; continue; }
+
+    const agent = row.agent;
+    const state = agentStates[agent.agentId] || { status: 'offline' };
+    const displayName = getDisplayName(agent);
+
+    // Row background (alternating)
+    ctx.fillStyle = 'rgba(0,0,0,0.05)';
+    ctx.fillRect(0, y, W, ROW_H);
+
+    // Label area background
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(0, y, LABEL_W, ROW_H);
+
+    // Status dot
+    const dotColor = statusColors[state.status] || statusColors.offline;
+    ctx.fillStyle = dotColor;
+    ctx.beginPath();
+    ctx.arc(16, y + ROW_H / 2, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Agent abbreviation badge
+    ctx.fillStyle = agent.color;
+    const badgeX = 28, badgeY = y + ROW_H / 2 - 8;
+    ctx.beginPath();
+    ctx.roundRect(badgeX, badgeY, 30, 16, 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 8px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(agent.abbreviation, badgeX + 15, y + ROW_H / 2 + 3);
+
+    // Agent name
+    ctx.fillStyle = state.status === 'offline' ? tv.textDim : tv.textMuted;
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(displayName, 64, y + ROW_H / 2 + 3);
+
+    // Separator
+    ctx.strokeStyle = tv.lineColor.replace(/[\d.]+\)$/, '0.1)');
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(LABEL_W, y);
+    ctx.lineTo(LABEL_W, y + ROW_H);
+    ctx.stroke();
+
+    // Draw spans
+    for (const span of row.spans) {
+      const x1 = Math.max(LABEL_W, timeToX(span.start));
+      const x2 = timeToX(span.end || Date.now());
+      if (x2 < LABEL_W || x1 > W) continue;
+
+      const barH = 14;
+      const barY = y + (ROW_H - barH) / 2;
+      const color = statusColors[span.status] || statusColors.offline;
+      const alpha = span.status === 'active' ? 0.7 : span.status === 'idle' ? 0.4 : 0.15;
+
+      ctx.fillStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.roundRect(x1, barY, Math.max(2, x2 - x1), barH, 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Pulsing edge for open spans
+      if (!span.end && span.status === 'active') {
+        const pulse = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(Date.now() / 500));
+        ctx.fillStyle = color;
+        ctx.globalAlpha = pulse;
+        ctx.fillRect(x2 - 3, barY, 3, barH);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Row border
+    ctx.strokeStyle = tv.lineColor.replace(/[\d.]+\)$/, '0.08)');
+    ctx.beginPath();
+    ctx.moveTo(0, y + ROW_H);
+    ctx.lineTo(W, y + ROW_H);
+    ctx.stroke();
+
+    y += ROW_H;
+  }
+}
+
+function renderTimeline() {
+  tlCanvas.width = tlCanvas.parentElement.clientWidth;
+  tlCanvas.height = tlCanvas.parentElement.clientHeight;
+}
+
+function animateTimeline() {
+  if (currentLayout === 'timeline') drawTimeline();
+  requestAnimationFrame(animateTimeline);
+}
+
+// Timeline interaction
+(function initTimelineInteraction() {
+  const view = document.getElementById('view-timeline');
+  let dragging = false;
+  let dragStartX = 0, dragStartY = 0;
+  let startPanX = 0, startPanY = 0;
+
+  function syncResetBtn() {
+    const isDefault = tlTransform.panX === 0 && tlTransform.panY === 0 && tlTransform.scaleX === 1;
+    tlResetBtn.classList.toggle('visible', !isDefault);
+  }
+
+  view.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.iso-reset-btn')) return;
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    startPanX = tlTransform.panX;
+    startPanY = tlTransform.panY;
+    view.classList.add('dragging');
+    e.preventDefault();
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    tlTransform.panX = startPanX + (e.clientX - dragStartX);
+    tlTransform.panY = startPanY + (e.clientY - dragStartY);
+    syncResetBtn();
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (dragging) { dragging = false; view.classList.remove('dragging'); }
+  });
+
+  view.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    const oldScale = tlTransform.scaleX;
+    tlTransform.scaleX = Math.max(0.5, Math.min(20, oldScale * delta));
+    // Zoom toward cursor
+    const rect = tlCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left - 160; // offset by label width
+    tlTransform.panX = mx - (mx - tlTransform.panX) * (tlTransform.scaleX / oldScale);
+    syncResetBtn();
+  }, { passive: false });
+
+  tlResetBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const start = { ...tlTransform };
+    const duration = 400;
+    const t0 = performance.now();
+    function animateReset(now) {
+      const t = Math.min(1, (now - t0) / duration);
+      if (t >= 1) {
+        tlTransform.panX = 0; tlTransform.panY = 0; tlTransform.scaleX = 1;
+      } else {
+        const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        tlTransform.panX = start.panX * (1 - ease);
+        tlTransform.panY = start.panY * (1 - ease);
+        tlTransform.scaleX = start.scaleX + (1 - start.scaleX) * ease;
+        requestAnimationFrame(animateReset);
+      }
+      syncResetBtn();
+    }
+    requestAnimationFrame(animateReset);
+  });
+
+  // Click on label area to open agent detail
+  tlCanvas.addEventListener('click', (e) => {
+    const rect = tlCanvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    if (mx > 160) return; // Only handle label column clicks
+
+    const HEADER_H = 36, ROW_H = 32, PROJECT_H = 28;
+    const pm = buildProjectMap();
+    const projects = Object.keys(pm).sort();
+    let y = HEADER_H + tlTransform.panY;
+
+    for (const projName of projects) {
+      const isCollapsed = collapsedProjects.has(projName);
+
+      if (my >= y && my < y + PROJECT_H) {
+        // Clicked on project header - toggle collapse
+        if (collapsedProjects.has(projName)) collapsedProjects.delete(projName);
+        else collapsedProjects.add(projName);
+        return;
+      }
+      y += PROJECT_H;
+      if (isCollapsed) continue;
+
+      const projectAgents = sortAgents(agentRegistry.filter(a => a.project === projName));
+      for (const agent of projectAgents) {
+        if (my >= y && my < y + ROW_H) {
+          openAgentDetail(agent.agentId);
+          return;
+        }
+        y += ROW_H;
+      }
+    }
+  });
+})();
 
 // ============================================================
 // Graph View (Phase 2: message animations, Phase 4: dynamic pulses)
@@ -2023,13 +2639,16 @@ function updateView(agentId) {
     case 'list': updateList(agentId); break;
     case 'cards': updateCards(agentId); break;
     case 'graph': break; // Graph redraws every frame
+    case 'tree': updateTree(agentId); break;
+    case 'timeline': break; // Timeline redraws every frame
   }
 }
 
-// Update time-since values in list/cards every 5s
+// Update time-since values in list/cards/tree every 5s
 setInterval(() => {
   if (currentLayout === 'list') renderList();
   if (currentLayout === 'cards') renderCards();
+  if (currentLayout === 'tree') renderTree();
 }, 5000);
 
 // ============================================================
@@ -2244,6 +2863,96 @@ const TYPE_COLORS = [
 ];
 
 // ============================================================
+// Keyboard Shortcuts
+// ============================================================
+let keyboardSelectedIndex = -1;
+
+function getNavigableAgents() {
+  return sortAgents(getFilteredAgents());
+}
+
+function setKeyboardSelection(index) {
+  document.querySelectorAll('.keyboard-selected').forEach(el => el.classList.remove('keyboard-selected'));
+  const agents = getNavigableAgents();
+  if (agents.length === 0) { keyboardSelectedIndex = -1; return; }
+  keyboardSelectedIndex = ((index % agents.length) + agents.length) % agents.length;
+  const agentId = agents[keyboardSelectedIndex].agentId;
+
+  if (currentLayout === 'list') {
+    const row = document.getElementById(`list-agent-${agentId}`);
+    if (row) { row.classList.add('keyboard-selected'); row.scrollIntoView({ block: 'nearest' }); }
+  } else if (currentLayout === 'cards') {
+    const card = document.getElementById(`card-agent-${agentId}`);
+    if (card) { card.classList.add('keyboard-selected'); card.scrollIntoView({ block: 'nearest' }); }
+  }
+}
+
+function toggleShortcutsOverlay() {
+  document.getElementById('shortcuts-overlay').classList.toggle('open');
+}
+
+function cycleTheme() {
+  const themes = [...document.querySelectorAll('.theme-option[data-theme]')].map(el => el.dataset.theme);
+  const idx = themes.indexOf(currentTheme);
+  const next = themes[(idx + 1) % themes.length];
+  applyTheme(next);
+}
+
+document.addEventListener('keydown', (e) => {
+  const isInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+  const overlayOpen = document.getElementById('shortcuts-overlay').classList.contains('open');
+
+  if (e.key === 'Escape') {
+    if (overlayOpen) { toggleShortcutsOverlay(); return; }
+    if (isInput) { e.target.blur(); e.target.value = ''; searchFilter = ''; renderCurrentLayout(); return; }
+    if (selectedAgentId) { closeAgentDetail(); return; }
+    document.getElementById('theme-dropdown').classList.remove('open');
+    document.getElementById('cleanup-dropdown').classList.remove('open');
+    document.getElementById('notify-dropdown').classList.remove('open');
+    return;
+  }
+
+  if (overlayOpen) {
+    if (e.key === '?') toggleShortcutsOverlay();
+    return;
+  }
+
+  if (isInput) return;
+
+  if (e.key === '1') { switchLayout('isometric'); return; }
+  if (e.key === '2') { switchLayout('list'); return; }
+  if (e.key === '3') { switchLayout('cards'); return; }
+  if (e.key === '4') { switchLayout('graph'); return; }
+  if (e.key === '5') { switchLayout('tree'); return; }
+  if (e.key === '6') { switchLayout('timeline'); return; }
+  if (e.key === '/') { e.preventDefault(); document.getElementById('agent-search').focus(); return; }
+  if (e.key === '?') { toggleShortcutsOverlay(); return; }
+  if (e.key === 't') { cycleTheme(); return; }
+  if (e.key === 'r') {
+    if (currentLayout === 'isometric') isoResetBtn.click();
+    else if (currentLayout === 'graph') graphResetBtn.click();
+    return;
+  }
+  if (e.key === 'j' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    setKeyboardSelection(keyboardSelectedIndex + 1);
+    return;
+  }
+  if (e.key === 'k' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    setKeyboardSelection(keyboardSelectedIndex - 1);
+    return;
+  }
+  if (e.key === 'Enter') {
+    const agents = getNavigableAgents();
+    if (keyboardSelectedIndex >= 0 && keyboardSelectedIndex < agents.length) {
+      openAgentDetail(agents[keyboardSelectedIndex].agentId);
+    }
+    return;
+  }
+});
+
+// ============================================================
 // Init
 // ============================================================
 window.addEventListener('resize', renderCurrentLayout);
@@ -2251,4 +2960,5 @@ window.addEventListener('resize', renderCurrentLayout);
 switchLayout(currentLayout);
 animateIso();
 animateGraph();
+animateTimeline();
 connect();

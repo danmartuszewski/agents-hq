@@ -46,6 +46,8 @@
         <button class="layout-btn" data-layout="list">LIST</button>
         <button class="layout-btn" data-layout="cards">CARDS</button>
         <button class="layout-btn" data-layout="graph">GRAPH</button>
+        <button class="layout-btn" data-layout="tree">TREE</button>
+        <button class="layout-btn" data-layout="timeline">TIMELINE</button>
       </div>
       <div id="theme-switcher">
         <button id="theme-btn"><span class="swatch"></span> THEME</button>
@@ -94,6 +96,17 @@
         <div id="cards-container"></div>
       </div>
 
+      <!-- Timeline View -->
+      <div id="view-timeline" class="view-container">
+        <canvas id="timeline-canvas"></canvas>
+        <button id="timeline-reset" class="iso-reset-btn" title="Reset view">RESET</button>
+      </div>
+
+      <!-- Tree View -->
+      <div id="view-tree" class="view-container">
+        <div id="tree-container"></div>
+      </div>
+
       <!-- Graph View -->
       <div id="view-graph" class="view-container">
         <canvas id="graph-canvas"></canvas>
@@ -129,6 +142,32 @@
             <div class="detail-section-title">EVENT LOG</div>
             <div id="agent-detail-log"></div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="shortcuts-overlay" class="shortcuts-overlay" role="dialog" aria-label="Keyboard shortcuts">
+    <div class="shortcuts-modal">
+      <div class="shortcuts-title">KEYBOARD SHORTCUTS</div>
+      <div class="shortcuts-grid">
+        <div class="shortcut-group">
+          <div class="shortcut-row"><kbd>1</kbd><span>HQ View</span></div>
+          <div class="shortcut-row"><kbd>2</kbd><span>List View</span></div>
+          <div class="shortcut-row"><kbd>3</kbd><span>Cards View</span></div>
+          <div class="shortcut-row"><kbd>4</kbd><span>Graph View</span></div>
+          <div class="shortcut-row"><kbd>5</kbd><span>Tree View</span></div>
+          <div class="shortcut-row"><kbd>6</kbd><span>Timeline View</span></div>
+        </div>
+        <div class="shortcut-group">
+          <div class="shortcut-row"><kbd>/</kbd><span>Focus search</span></div>
+          <div class="shortcut-row"><kbd>Esc</kbd><span>Close / Clear</span></div>
+          <div class="shortcut-row"><kbd>j</kbd> <kbd>&darr;</kbd><span>Next agent</span></div>
+          <div class="shortcut-row"><kbd>k</kbd> <kbd>&uarr;</kbd><span>Previous agent</span></div>
+          <div class="shortcut-row"><kbd>Enter</kbd><span>Open agent detail</span></div>
+          <div class="shortcut-row"><kbd>t</kbd><span>Cycle theme</span></div>
+          <div class="shortcut-row"><kbd>r</kbd><span>Reset view</span></div>
+          <div class="shortcut-row"><kbd>?</kbd><span>This help</span></div>
         </div>
       </div>
     </div>

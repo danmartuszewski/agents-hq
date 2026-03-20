@@ -137,7 +137,7 @@ app.get('/api/messages', (req, res) => {
 // Update agent status via HTTP
 app.post('/api/agent/:id/status', (req, res) => {
   const id = decodeURIComponent(req.params.id);
-  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, hookEvent, toolDetail, toolName: postToolName, transcriptTools } = req.body;
+  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, parentAgentId, hookEvent, toolDetail, toolName: postToolName, transcriptTools } = req.body;
   // Sanitize for filename: keep uniqueness but make filesystem-safe
   const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_');
   const filePath = path.join(STATE_DIR, `${safeFilename}.json`);
@@ -197,6 +197,7 @@ app.post('/api/agent/:id/status', (req, res) => {
     sessionStart
   };
 
+  if (parentAgentId) updated.parentAgentId = parentAgentId;
   if (lastMessage) updated.lastMessage = lastMessage;
   if (toolDetail) updated.toolDetail = toolDetail;
   if (lastToolDuration !== null) updated.lastToolDuration = lastToolDuration;
