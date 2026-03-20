@@ -18,7 +18,7 @@ Agents are grouped by project (derived from `cwd`) and by type. The dashboard bu
 
 ## Views
 
-Four layouts, switchable from the header:
+Six layouts, switchable from the header (or press `1`-`6`):
 
 **HQ** - 3D isometric floor with agents as spheres, grouped by project. Drag to orbit, scroll to zoom, alt+click to pan. Active agents pulse faster the more tools they've called recently. A mini-map shows up when you're zoomed in.
 
@@ -27,6 +27,23 @@ Four layouts, switchable from the header:
 **Cards** - Grid of cards, one per agent, showing live status and task. Grouped under collapsible project sections.
 
 **Graph** - 3D network view with project clusters and connection lines. Lines get thicker as agents exchange more messages. Messages animate as traveling dots.
+
+**Tree** - Hierarchical view showing which agent spawned which. Lead agents are roots, subagents are nested children. Agents whose parent went offline show in a separate "orphaned" section.
+
+**Timeline** - Gantt chart of agent activity over time. Each agent gets a row with color-coded bars for active, idle, and offline spans. Drag to pan, scroll to zoom. A "NOW" line marks the current time, and active spans pulse at the right edge.
+
+## Project stats
+
+Project headers in the List and Cards views show aggregate stats: active/idle/offline agent counts, total tool calls, average session duration, and crash count. Below that, a mini bar chart shows the top 5 most-used tools across the project.
+
+## Keyboard shortcuts
+
+Press `?` to see all shortcuts. The main ones:
+
+- `1`-`6` switch views (HQ, List, Cards, Graph, Tree, Timeline)
+- `/` focuses the search box, `Esc` clears it or closes panels
+- `j`/`k` or arrow keys cycle through agents, `Enter` opens the detail panel
+- `t` cycles the color theme, `r` resets the camera in HQ/Graph
 
 ## Agent detail panel
 
