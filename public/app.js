@@ -40,10 +40,32 @@ function saveNotifyFlags() {
 // Attention mode: 'active' (only when Claude is asking) | 'all' (also idle waits). Default 'all'.
 let attentionMode = localStorage.getItem('agents-hq-attention-mode') || 'all';
 
+// Claude Code emits these Notification messages today (Nov 2025):
+//   permission ask : "Claude needs your permission to use <Tool>"
+//   question ask   : "Claude is asking a question"
+//   60s idle wait  : "Claude is waiting for your input"
+// Anything else is treated as an active ask (safer default — surface it).
 function isIdleWait(message) {
-  const m = (message || '').toLowerCase();
+  const m = (message || '').trim().toLowerCase();
   if (!m) return true; // empty message → treat as idle
-  return m.includes('waiting for your input') || m.includes('has been idle') || m.includes('idle');
+  return m === 'claude is waiting for your input'
+      || m.startsWith('claude is waiting for your input');
+}
+function shouldNotifyForMessage(message) {
+  if (attentionMode === 'all') return true;
+  return !isIdleWait(message);
+}
+
+// HTML-escape for any payload that might originate from Claude Code's hook
+// data (awaitingMessage, currentTask, etc.). All Notification messages flow
+// through this before reaching innerHTML.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 function isAwaitingAttention(state) {
   if (!state) return false;
@@ -57,13 +79,22 @@ function isAwaitingAttention(state) {
   return agentId ? isInAttentionGrace(agentId) : false;
 }
 
-// Sticky attention grace: agents we recently notified about stay flagged for
-// a few seconds even if awaitingUser is cleared on the next tool call.
+// Attention lifecycle (two-stage model):
+//   Server is source of truth: writes awaitingUser=true on Notification hook,
+//   clears it on PreToolUse / PostToolUse / UserPromptSubmit.
+//   Client adds a 12s grace window on top so the red dot stays visible even
+//   if the next tool call lands a few hundred ms after Notification.
+//   - Triggering (sound + log entry) uses RAW awaitingUser (see WS handler).
+//   - Visibility (red dot, ATTN badge, stats chip) uses isAwaitingAttention(),
+//     which honors grace.
 const ATTENTION_GRACE_MS = 12000;
 const attentionGrace = {}; // agentId -> { until, message }
 function isInAttentionGrace(agentId) {
   const g = attentionGrace[agentId];
   return !!(g && g.until > Date.now());
+}
+function clearAttentionGrace(agentId) {
+  delete attentionGrace[agentId];
 }
 
 // ============================================================
@@ -1265,7 +1296,7 @@ function renderList() {
       const displayName = getDisplayName(agent);
 
       const attnBadge = attn
-        ? `<span class="attn-badge" title="${(state.awaitingMessage || 'Waiting on user input').replace(/"/g, '&quot;')}">⚠ ATTN</span>`
+        ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">⚠ ATTN</span>`
         : '';
       row.innerHTML = `
         <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span>${attnBadge}</span>
@@ -1295,7 +1326,7 @@ function updateList(agentId) {
   const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '\u2014';
   const displayName = getDisplayName(agent);
   const attnBadge = attn
-    ? `<span class="attn-badge" title="${(state.awaitingMessage || 'Waiting on user input').replace(/"/g, '&quot;')}">\u26a0 ATTN</span>`
+    ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">\u26a0 ATTN</span>`
     : '';
 
   row.innerHTML = `
@@ -1374,7 +1405,7 @@ function createCard(agent, state) {
   const statusLabel = state.status.toUpperCase();
   const displayName = getDisplayName(agent);
   const attnBanner = attn
-    ? `<div class="card-attn-banner" title="${(state.awaitingMessage || '').replace(/"/g, '&quot;')}">\u26a0 NEEDS YOUR INPUT${state.awaitingMessage ? ` \u00b7 ${state.awaitingMessage}` : ''}</div>`
+    ? `<div class="card-attn-banner" title="${esc(state.awaitingMessage || '')}">\u26a0 NEEDS YOUR INPUT${state.awaitingMessage ? ` \u00b7 ${esc(state.awaitingMessage)}` : ''}</div>`
     : '';
 
   card.innerHTML = `
@@ -1472,7 +1503,7 @@ function renderTreeNode(node, depth, container) {
   const toggleArrow = hasChildren ? (isCollapsed ? '\u25b6' : '\u25bc') : '';
   const childCount = hasChildren ? `<span class="tree-children-count">(${children.length})</span>` : '';
   const attnBadge = attn
-    ? `<span class="attn-badge" title="${(state.awaitingMessage || 'Waiting on user input').replace(/"/g, '&quot;')}">\u26a0 ATTN</span>`
+    ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">\u26a0 ATTN</span>`
     : '';
 
   row.innerHTML = `
@@ -2525,7 +2556,7 @@ function renderAgentDetail() {
   const attnSection = isAwaitingAttention(state)
     ? `<div class="detail-attn-banner">
          <div class="detail-attn-title">⚠ AWAITING USER INPUT</div>
-         <div class="detail-attn-msg">${state.awaitingMessage || 'Claude is waiting on you.'}</div>
+         <div class="detail-attn-msg">${esc(state.awaitingMessage || 'Claude is waiting on you.')}</div>
          ${state.awaitingSince ? `<div class="detail-attn-since">since ${getTimeSince(state.awaitingSince)}</div>` : ''}
        </div>`
     : '';
@@ -2767,11 +2798,12 @@ function logNotification(agentId, agentName, reason, detail) {
   const el = document.createElement('div');
   el.className = 'log-entry log-bell';
   const t = new Date().toLocaleTimeString();
-  const detailHtml = detail ? ` <span class="transition">${String(detail).replace(/</g, '&lt;')}</span>` : '';
+  const detailHtml = detail ? ` <span class="transition">${esc(detail)}</span>` : '';
+  const safeName = esc(agentName || (agentId ? `@${agentId}` : ''));
   const nameHtml = agentId
-    ? `<span class="agent-ref" data-agent-id="${agentId}">${agentName || `@${agentId}`}</span>`
-    : `<span class="transition">${agentName || ''}</span>`;
-  el.innerHTML = `<span class="time">${t}</span> <span class="marker">[🔔]</span> ${nameHtml} <span class="transition">${reason}</span>${detailHtml}`;
+    ? `<span class="agent-ref" data-agent-id="${esc(agentId)}">${safeName}</span>`
+    : `<span class="transition">${safeName}</span>`;
+  el.innerHTML = `<span class="time">${t}</span> <span class="marker">[🔔]</span> ${nameHtml} <span class="transition">${esc(reason)}</span>${detailHtml}`;
   activityLogEl.insertBefore(el, activityLogEl.firstChild);
   while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
 }
@@ -2922,6 +2954,10 @@ function connect() {
     if (msg.type === 'init') {
       agentRegistry = msg.config;
       agentStates = msg.states;
+      // Drop grace entries for agents that no longer exist
+      for (const id of Object.keys(attentionGrace)) {
+        if (!agentStates[id]) clearAttentionGrace(id);
+      }
 
       // Restore persisted per-agent event logs and tool counts
       agentLogs = {};
@@ -2958,8 +2994,8 @@ function connect() {
             const name = agentInfo ? getDisplayName(agentInfo) : `@${(entry.agentId || '').substring(0, 8)}`;
             const el = document.createElement('div');
             el.className = 'log-entry log-attention';
-            const msg = (entry.message || 'waiting on user').replace(/</g, '&lt;');
-            el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[⚠]</span> <span class="agent-ref" data-agent-id="${entry.agentId}">${name}</span> <span class="transition">${msg}</span>`;
+            const msg = esc(entry.message || 'waiting on user');
+            el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[⚠]</span> <span class="agent-ref" data-agent-id="${esc(entry.agentId)}">${esc(name)}</span> <span class="transition">${msg}</span>`;
             activityLogEl.appendChild(el);
           } else {
             const agentInfo = getAgentById(entry.agentId);
@@ -3110,20 +3146,15 @@ function connect() {
         notifyAgentEvent(agentId, name, oldStatus, agent.status);
       }
 
-      // Attention required transition (Notification hook)
-      const wasAttn = isAwaitingAttention(oldState);
-      const isAttn = isAwaitingAttention(agent);
-      if (!wasAttn && isAttn) {
+      // Attention required transition (Notification hook).
+      // Use raw flag, not the grace-extended classifier, so back-to-back
+      // Notifications inside a single grace window still trigger a fresh beep.
+      const rawWas = !!(oldState && oldState.awaitingUser);
+      const rawIs  = !!agent.awaitingUser;
+      if (!rawWas && rawIs && shouldNotifyForMessage(agent.awaitingMessage)) {
         const agentInfo = getAgentById(agentId);
         const name = agentInfo ? getDisplayName(agentInfo) : `@${agentId}`;
         notifyAttentionRequired(agentId, name, agent.awaitingMessage);
-        const el = document.createElement('div');
-        el.className = 'log-entry log-attention';
-        const msg = (agent.awaitingMessage || 'waiting on user').replace(/</g, '&lt;');
-        const t = new Date().toLocaleTimeString();
-        el.innerHTML = `<span class="time">${t}</span> <span class="marker">[⚠]</span> <span class="agent-ref" data-agent-id="${agentId}">${name}</span> <span class="transition">${msg}</span>`;
-        activityLogEl.insertBefore(el, activityLogEl.firstChild);
-        while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
       }
 
       agentStates[agentId] = agent;

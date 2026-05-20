@@ -126,6 +126,14 @@ launchctl unload ~/Library/LaunchAgents/com.agents-hq.server.plist
 
 ## Hooking into Claude Code
 
+### Let an agent install it
+
+For a hands-off install, hand the repo to Claude Code (or any AI agent) and say:
+
+> Follow `INSTALL.md` in this repo to install Agents HQ for me.
+
+The agent will install deps, start the server, merge the hooks into `~/.claude/settings.json`, and run a smoke test. See [INSTALL.md](INSTALL.md) for the exact procedure.
+
 ### Global setup (recommended)
 
 Add hooks to `~/.claude/settings.json` so every Claude Code session reports to the dashboard:
