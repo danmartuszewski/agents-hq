@@ -65,6 +65,65 @@ npm start
 
 Opens at `http://localhost:3141`.
 
+### Running in background
+
+`npm start` occupies a terminal. To run the dashboard without keeping a terminal open:
+
+**Quick (session-only)**
+
+```bash
+nohup npm start > /tmp/agents-hq.log 2>&1 &
+```
+
+The server runs in the background and survives closing the terminal. Logs go to `/tmp/agents-hq.log`. To stop it:
+
+```bash
+lsof -ti:3141 | xargs kill
+```
+
+**Auto-start on login (macOS launchd)**
+
+Create `~/Library/LaunchAgents/com.agents-hq.server.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agents-hq.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/node</string>
+        <string>/path/to/agents-hq/server.js</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/agents-hq</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/agents-hq.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/agents-hq.stderr.log</string>
+</dict>
+</plist>
+```
+
+Replace `/usr/local/bin/node` with your node path (`which node`) and `/path/to/agents-hq` with the actual project path. Then load it:
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.agents-hq.server.plist
+```
+
+This starts the server automatically on login and restarts it if it crashes. To stop:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.agents-hq.server.plist
+```
+
 ## Hooking into Claude Code
 
 ### Global setup (recommended)
@@ -117,6 +176,28 @@ Add hooks to `~/.claude/settings.json` so every Claude Code session reports to t
           }
         ]
       }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/agents-hq/.claude/hooks/agent-tracker.js Notification"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/agents-hq/.claude/hooks/agent-tracker.js UserPromptSubmit"
+          }
+        ]
+      }
     ]
   }
 }
@@ -136,6 +217,8 @@ If you only want tracking for one project, add the same hooks to that project's 
 - `PostToolUse` - fires after a tool finishes. Clears the tool indicator and records duration.
 - `SubagentStart` - agent appears on the dashboard as active.
 - `SubagentStop` - agent goes offline. The hook parses the subagent's transcript to extract all tool calls made during its lifetime, since PreToolUse/PostToolUse don't fire for subagent processes.
+- `Notification` - fires when Claude needs the user (tool-permission prompt or idle wait). Sets an "awaiting user" flag that pulses a `⚠ ATTN` badge on the agent's row/card and pops a desktop notification. Main-session only — Claude Code does not fire this for subagents.
+- `UserPromptSubmit` - fires when the user submits a new prompt. Clears the awaiting flag. `PreToolUse` also clears it implicitly, so this hook is optional but recommended for snappier UI.
 
 Main sessions (no `agent_id`) are tracked via `session_id` and show as type `lead`. Subagents use `agent_id` directly.
 

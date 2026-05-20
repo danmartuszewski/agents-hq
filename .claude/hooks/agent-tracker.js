@@ -151,6 +151,7 @@ process.stdin.on('end', () => {
   const toolInput = data.tool_input || {};
   const lastMsg = (data.last_assistant_message || '').substring(0, 200);
   const transcriptPath = data.agent_transcript_path || '';
+  const notificationMessage = (data.message || '').substring(0, 300);
 
   if (!agentId) process.exit(0);
 
@@ -230,6 +231,29 @@ process.stdin.on('end', () => {
         currentTool: null,
         toolName,
         hookEvent: 'PostToolUse',
+        cwd,
+        sessionId
+      };
+      if (agentType) body.agentType = agentType;
+      sendBody(body);
+      break;
+
+    case 'Notification':
+      body = {
+        awaitingUser: true,
+        awaitingMessage: notificationMessage,
+        hookEvent: 'Notification',
+        cwd,
+        sessionId
+      };
+      if (agentType) body.agentType = agentType;
+      sendBody(body);
+      break;
+
+    case 'UserPromptSubmit':
+      body = {
+        awaitingUser: false,
+        hookEvent: 'UserPromptSubmit',
         cwd,
         sessionId
       };

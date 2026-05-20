@@ -137,7 +137,7 @@ app.get('/api/messages', (req, res) => {
 // Update agent status via HTTP
 app.post('/api/agent/:id/status', (req, res) => {
   const id = decodeURIComponent(req.params.id);
-  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, parentAgentId, hookEvent, toolDetail, toolName: postToolName, transcriptTools } = req.body;
+  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, parentAgentId, hookEvent, toolDetail, toolName: postToolName, transcriptTools, awaitingUser, awaitingMessage } = req.body;
   // Sanitize for filename: keep uniqueness but make filesystem-safe
   const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_');
   const filePath = path.join(STATE_DIR, `${safeFilename}.json`);
@@ -203,6 +203,26 @@ app.post('/api/agent/:id/status', (req, res) => {
   if (lastToolDuration !== null) updated.lastToolDuration = lastToolDuration;
   if (hookEvent === 'PostToolUse' && postToolName) updated.lastCompletedTool = postToolName;
 
+  // Attention required (Claude Code Notification hook) — main session only,
+  // Claude is asking the user for permission or has been idle waiting on input.
+  if (hookEvent === 'Notification' || awaitingUser === true) {
+    updated.awaitingUser = true;
+    updated.awaitingMessage = awaitingMessage || updated.awaitingMessage || '';
+    updated.awaitingSince = existing.awaitingUser ? (existing.awaitingSince || new Date().toISOString()) : new Date().toISOString();
+  } else if (
+    awaitingUser === false ||
+    hookEvent === 'UserPromptSubmit' ||
+    hookEvent === 'PreToolUse' ||
+    hookEvent === 'PostToolUse'
+  ) {
+    // User resolved the prompt (or agent moved on) — clear the flag.
+    if (updated.awaitingUser) {
+      updated.awaitingUser = false;
+      delete updated.awaitingMessage;
+      delete updated.awaitingSince;
+    }
+  }
+
   fs.writeFileSync(filePath, JSON.stringify(updated, null, 2));
 
   // Persist log entries
@@ -211,6 +231,11 @@ app.post('/api/agent/:id/status', (req, res) => {
   const now = new Date().toISOString();
   if (oldStatus !== newStatus || (hookEvent === 'PreToolUse' && currentTool)) {
     const logEntry = { time: now, agentId: id, oldStatus, newStatus, tool: currentTool || null, task: (toolDetail && toolDetail.summary) || currentTask || null };
+    appendActivityLog(logEntry);
+    appendAgentEventLog(filePath, logEntry);
+  }
+  if (hookEvent === 'Notification') {
+    const logEntry = { time: now, agentId: id, type: 'attention', message: awaitingMessage || '' };
     appendActivityLog(logEntry);
     appendAgentEventLog(filePath, logEntry);
   }
@@ -423,7 +448,14 @@ setInterval(() => {
       const oldStatus = state.status;
       state.status = newStatus;
       state.currentTool = null;
-      if (newStatus === 'offline') state.sessionStart = null;
+      if (newStatus === 'offline') {
+        state.sessionStart = null;
+        if (state.awaitingUser) {
+          state.awaitingUser = false;
+          delete state.awaitingMessage;
+          delete state.awaitingSince;
+        }
+      }
       const filename = state._filename || `${id}.json`;
       delete state._filename;
       const filePath = path.join(STATE_DIR, filename);

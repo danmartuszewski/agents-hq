@@ -510,6 +510,8 @@ body {
   letter-spacing: 2px;
   color: var(--accent);
   text-shadow: 0 0 20px color-mix(in srgb, var(--accent) 30%, transparent);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 #header .version {
@@ -527,36 +529,78 @@ body {
 
 /* ---- Layout Switcher ---- */
 #layout-switcher {
-  display: flex;
-  gap: 2px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px;
+  position: relative;
 }
 
-.layout-btn {
-  background: transparent;
-  border: none;
+#layout-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
   color: var(--accent-dim);
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 1px;
-  padding: 5px 14px;
+  padding: 7px 14px;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: 4px;
   transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.layout-btn:hover {
+#layout-btn:hover {
   color: var(--accent);
-  background: var(--accent-hover);
+  border-color: var(--accent-dim);
 }
 
-.layout-btn.active {
-  color: var(--bg);
-  background: var(--accent);
+#layout-btn #layout-current {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+#layout-btn .caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+#layout-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  z-index: 1000;
+  min-width: 140px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+#layout-dropdown.open {
+  display: block;
+}
+
+.layout-option {
+  display: block;
+  padding: 7px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.layout-option:hover {
+  background: var(--accent-hover);
+  color: var(--text);
+}
+
+.layout-option.active {
+  color: var(--accent);
   font-weight: 700;
 }
 
@@ -683,22 +727,22 @@ body {
 }
 
 .cleanup-option.auto-clean-option,
-.cleanup-option.notify-level-option,
-.cleanup-option.notify-sound-option {
+.cleanup-option.notify-sound-option,
+.cleanup-option.attn-mode-option {
   padding-left: 28px;
   position: relative;
 }
 
 .cleanup-option.auto-clean-option.selected,
-.cleanup-option.notify-level-option.selected,
-.cleanup-option.notify-sound-option.selected {
+.cleanup-option.notify-sound-option.selected,
+.cleanup-option.attn-mode-option.selected {
   color: var(--accent);
   font-weight: 600;
 }
 
 .cleanup-option.auto-clean-option.selected::before,
-.cleanup-option.notify-level-option.selected::before,
-.cleanup-option.notify-sound-option.selected::before {
+.cleanup-option.notify-sound-option.selected::before,
+.cleanup-option.attn-mode-option.selected::before {
   content: '';
   position: absolute;
   left: 12px;
@@ -708,6 +752,24 @@ body {
   height: 6px;
   border-radius: 50%;
   background: var(--accent);
+}
+
+.cleanup-option.notify-check-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cleanup-option.notify-check-option .check-mark {
+  font-size: 13px;
+  color: var(--accent-dim);
+  width: 14px;
+  text-align: center;
+}
+.cleanup-option.notify-check-option.selected {
+  color: var(--text-bright);
+}
+.cleanup-option.notify-check-option.selected .check-mark {
+  color: var(--accent);
 }
 
 #cleanup-btn.autoclean-active {
@@ -746,26 +808,26 @@ body {
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 1px;
-  padding: 7px 14px;
+  padding: 7px 10px;
   cursor: pointer;
   border-radius: 4px;
   transition: all 0.2s;
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
 }
 
 #theme-btn:hover {
-  color: var(--accent);
   border-color: var(--accent-dim);
 }
 
 #theme-btn .swatch {
-  width: 8px;
-  height: 8px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: var(--accent);
   flex-shrink: 0;
+  box-shadow: 0 0 6px var(--accent);
 }
 
 #theme-dropdown {
@@ -859,10 +921,132 @@ body {
   color: var(--text-dim);
   letter-spacing: 2px;
   margin-left: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .team-stats .stat-active { color: var(--status-active); }
 .team-stats .stat-idle { color: var(--status-idle); }
+.team-stats .stat-attention {
+  color: #fff;
+  background: var(--status-idle);
+  padding: 1px 8px;
+  border-radius: 3px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  animation: attn-pulse 1.4s ease-in-out infinite;
+}
+.team-stats .stat-attention:hover { filter: brightness(1.15); }
+
+@keyframes attn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-idle) 70%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--status-idle) 0%, transparent); }
+}
+
+/* ---- Attention indicator (Notification hook) ---- */
+.attn-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--status-idle);
+  color: #fff;
+  animation: attn-pulse 1.4s ease-in-out infinite;
+}
+
+.list-row.awaiting-user,
+.agent-card.awaiting-user,
+.tree-node.awaiting-user {
+  background: color-mix(in srgb, var(--status-idle) 8%, transparent);
+}
+.list-row.awaiting-user:hover,
+.tree-node.awaiting-user:hover {
+  background: color-mix(in srgb, var(--status-idle) 14%, transparent);
+}
+.agent-card.awaiting-user {
+  border-color: var(--status-idle);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--status-idle) 50%, transparent);
+}
+
+/* Red attention dot overlay on agent abbreviation badges (list/cards/tree) */
+.list-row.awaiting-user .agent-abbr,
+.tree-node.awaiting-user .agent-abbr,
+.agent-card.awaiting-user .card-orb {
+  position: relative;
+}
+.list-row.awaiting-user .agent-abbr::after,
+.tree-node.awaiting-user .agent-abbr::after,
+.agent-card.awaiting-user .card-orb::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff3b30;
+  border: 1.5px solid var(--bg);
+  box-shadow: 0 0 6px rgba(255, 59, 48, 0.9);
+  animation: attn-pulse-dot 1.2s ease-in-out infinite;
+}
+.agent-card.awaiting-user .card-orb::after {
+  width: 12px;
+  height: 12px;
+  top: -4px;
+  right: -4px;
+}
+@keyframes attn-pulse-dot {
+  0%, 100% { box-shadow: 0 0 6px rgba(255, 59, 48, 0.9); transform: scale(1); }
+  50%      { box-shadow: 0 0 12px rgba(255, 59, 48, 1); transform: scale(1.15); }
+}
+
+.card-attn-banner {
+  margin: 8px 0;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--status-idle) 20%, transparent);
+  border-left: 3px solid var(--status-idle);
+  color: var(--text-bright);
+  font-size: 11px;
+  border-radius: 2px;
+}
+
+.detail-attn-banner {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--status-idle) 18%, transparent);
+  border-left: 3px solid var(--status-idle);
+  border-radius: 2px;
+}
+.detail-attn-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--status-idle);
+  margin-bottom: 4px;
+}
+.detail-attn-msg {
+  font-size: 12px;
+  color: var(--text-bright);
+  word-break: break-word;
+}
+.detail-attn-since {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.log-entry.log-attention .marker { color: var(--status-idle); }
+.log-entry.log-attention { color: var(--text-bright); }
+.log-entry.log-bell {
+  color: var(--text-bright);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-left: 2px solid var(--accent);
+  padding-left: 6px;
+}
+.log-entry.log-bell .marker { color: var(--accent); }
 
 /* ---- View Containers ---- */
 .view-container {
@@ -1067,7 +1251,7 @@ body {
 
 .list-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   padding: 10px 16px;
   border-bottom: 1px solid var(--border-faint);
   font-size: 12px;
@@ -1145,9 +1329,9 @@ body {
 
 .list-row .task-text {
   color: inherit;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .list-row .time-text {

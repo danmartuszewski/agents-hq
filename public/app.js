@@ -19,9 +19,52 @@ let messageAnimations = [];       // { fromId, toId, startTime, duration }
 // Phase 6: QoL state
 let searchFilter = '';
 let collapsedProjects = new Set();
-let notifyLevel = localStorage.getItem('agents-hq-notify-level') || 'crashes'; // 'off', 'crashes', 'status'
 let notifySound = localStorage.getItem('agents-hq-notify-sound') !== 'off'; // default on
 let notificationsPermission = Notification.permission;
+
+// Notify flags (multi-select). Migrates old 'agents-hq-notify-level' if present.
+const notifyFlags = (() => {
+  const stored = localStorage.getItem('agents-hq-notify-flags');
+  if (stored) { try { return JSON.parse(stored); } catch {} }
+  const legacy = localStorage.getItem('agents-hq-notify-level');
+  if (legacy === 'off')       return { attention: false, crashes: false, status: false };
+  if (legacy === 'attention') return { attention: true,  crashes: false, status: false };
+  if (legacy === 'status')    return { attention: true,  crashes: true,  status: true  };
+  // default + legacy 'crashes'
+  return { attention: true, crashes: true, status: false };
+})();
+function saveNotifyFlags() {
+  localStorage.setItem('agents-hq-notify-flags', JSON.stringify(notifyFlags));
+}
+
+// Attention mode: 'active' (only when Claude is asking) | 'all' (also idle waits). Default 'all'.
+let attentionMode = localStorage.getItem('agents-hq-attention-mode') || 'all';
+
+function isIdleWait(message) {
+  const m = (message || '').toLowerCase();
+  if (!m) return true; // empty message → treat as idle
+  return m.includes('waiting for your input') || m.includes('has been idle') || m.includes('idle');
+}
+function isAwaitingAttention(state) {
+  if (!state) return false;
+  if (state.awaitingUser) {
+    if (attentionMode === 'all') return true;
+    return !isIdleWait(state.awaitingMessage);
+  }
+  // Grace: keep showing the indicator briefly after a Notification fired so
+  // the user has time to see the red dot before PreToolUse clears it.
+  const agentId = state.agentId;
+  return agentId ? isInAttentionGrace(agentId) : false;
+}
+
+// Sticky attention grace: agents we recently notified about stay flagged for
+// a few seconds even if awaitingUser is cleared on the next tool call.
+const ATTENTION_GRACE_MS = 12000;
+const attentionGrace = {}; // agentId -> { until, message }
+function isInAttentionGrace(agentId) {
+  const g = attentionGrace[agentId];
+  return !!(g && g.until > Date.now());
+}
 
 // ============================================================
 // Project Map & Layout helpers
@@ -240,12 +283,14 @@ document.getElementById('theme-btn').addEventListener('click', (e) => {
   document.getElementById('theme-dropdown').classList.toggle('open');
   document.getElementById('cleanup-dropdown').classList.remove('open');
   document.getElementById('notify-dropdown').classList.remove('open');
+  document.getElementById('layout-dropdown').classList.remove('open');
 });
 
 document.addEventListener('click', () => {
   document.getElementById('theme-dropdown').classList.remove('open');
   document.getElementById('cleanup-dropdown').classList.remove('open');
   document.getElementById('notify-dropdown').classList.remove('open');
+  document.getElementById('layout-dropdown').classList.remove('open');
 });
 
 document.querySelectorAll('.theme-option').forEach(opt => {
@@ -267,6 +312,7 @@ document.getElementById('cleanup-btn').addEventListener('click', (e) => {
   document.getElementById('cleanup-dropdown').classList.toggle('open');
   document.getElementById('theme-dropdown').classList.remove('open');
   document.getElementById('notify-dropdown').classList.remove('open');
+  document.getElementById('layout-dropdown').classList.remove('open');
 });
 
 document.querySelectorAll('.cleanup-option[data-action]').forEach(opt => {
@@ -365,19 +411,28 @@ document.getElementById('agent-search').addEventListener('input', (e) => {
 // ============================================================
 function updateNotifyUI() {
   const btn = document.getElementById('notify-btn');
-  document.querySelectorAll('.notify-level-option').forEach(opt => {
-    opt.classList.toggle('selected', opt.dataset.level === notifyLevel);
+  document.querySelectorAll('.notify-check-option').forEach(opt => {
+    const on = !!notifyFlags[opt.dataset.flag];
+    const mark = opt.querySelector('.check-mark');
+    if (mark) mark.textContent = on ? '☑' : '☐';
+    opt.classList.toggle('selected', on);
+  });
+  document.querySelectorAll('.attn-mode-option').forEach(opt => {
+    opt.classList.toggle('selected', opt.dataset.mode === attentionMode);
   });
   document.querySelectorAll('.notify-sound-option').forEach(opt => {
     opt.classList.toggle('selected', opt.dataset.sound === (notifySound ? 'on' : 'off'));
   });
-  if (notifyLevel === 'off') {
+  const labelParts = [];
+  if (notifyFlags.attention) labelParts.push('ATTN');
+  if (notifyFlags.status) labelParts.push('STATUS');
+  else if (notifyFlags.crashes) labelParts.push('CRASH');
+  if (labelParts.length === 0) {
     btn.classList.add('notify-off');
-    btn.textContent = 'NOTIFY';
+    btn.textContent = 'NOTIFY · OFF';
   } else {
     btn.classList.remove('notify-off');
-    const labels = { crashes: 'CRASHES', status: 'STATUS' };
-    btn.textContent = `NOTIFY · ${labels[notifyLevel]}`;
+    btn.textContent = `NOTIFY · ${labelParts.join('+')}`;
   }
 }
 
@@ -386,15 +441,29 @@ document.getElementById('notify-btn').addEventListener('click', (e) => {
   document.getElementById('notify-dropdown').classList.toggle('open');
   document.getElementById('theme-dropdown').classList.remove('open');
   document.getElementById('cleanup-dropdown').classList.remove('open');
+  document.getElementById('layout-dropdown').classList.remove('open');
 });
 
-document.querySelectorAll('.notify-level-option').forEach(opt => {
+document.querySelectorAll('.notify-check-option').forEach(opt => {
   opt.addEventListener('click', (e) => {
     e.stopPropagation();
-    notifyLevel = opt.dataset.level;
-    localStorage.setItem('agents-hq-notify-level', notifyLevel);
+    const flag = opt.dataset.flag;
+    notifyFlags[flag] = !notifyFlags[flag];
+    saveNotifyFlags();
     updateNotifyUI();
-    document.getElementById('notify-dropdown').classList.remove('open');
+    // keep dropdown open so user can toggle multiple
+  });
+});
+
+document.querySelectorAll('.attn-mode-option').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    attentionMode = opt.dataset.mode;
+    localStorage.setItem('agents-hq-attention-mode', attentionMode);
+    updateNotifyUI();
+    if (typeof renderCurrentLayout === 'function') renderCurrentLayout();
+    if (typeof updateStats === 'function') updateStats();
+    if (typeof selectedAgentId !== 'undefined' && selectedAgentId) renderAgentDetail();
   });
 });
 
@@ -404,7 +473,6 @@ document.querySelectorAll('.notify-sound-option').forEach(opt => {
     notifySound = opt.dataset.sound === 'on';
     localStorage.setItem('agents-hq-notify-sound', notifySound ? 'on' : 'off');
     updateNotifyUI();
-    document.getElementById('notify-dropdown').classList.remove('open');
   });
 });
 
@@ -420,6 +488,18 @@ if (Notification.permission === 'default') {
 // ============================================================
 const activityLogEl = document.getElementById('activity-log');
 const teamStatsEl = document.getElementById('team-stats');
+
+// Click the "NEEDS ATTENTION" chip to jump to the next awaiting agent
+teamStatsEl.addEventListener('click', (e) => {
+  const chip = e.target.closest('#stat-attention-chip');
+  if (!chip) return;
+  e.stopPropagation();
+  const awaiting = Object.entries(agentStates).filter(([, s]) => isAwaitingAttention(s));
+  if (awaiting.length === 0) return;
+  awaiting.sort((a, b) => new Date(a[1].awaitingSince || 0) - new Date(b[1].awaitingSince || 0));
+  const nextId = awaiting[0][0];
+  if (typeof openAgentDetail === 'function') openAgentDetail(nextId);
+});
 
 // ============================================================
 // Sidebar resize
@@ -475,8 +555,20 @@ activityLogEl.addEventListener('click', (e) => {
 // ============================================================
 // Layout Switcher
 // ============================================================
-document.querySelectorAll('.layout-btn').forEach(btn => {
-  btn.addEventListener('click', () => switchLayout(btn.dataset.layout));
+document.getElementById('layout-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('layout-dropdown').classList.toggle('open');
+  document.getElementById('theme-dropdown').classList.remove('open');
+  document.getElementById('cleanup-dropdown').classList.remove('open');
+  document.getElementById('notify-dropdown').classList.remove('open');
+});
+
+document.querySelectorAll('.layout-option').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    switchLayout(opt.dataset.layout);
+    document.getElementById('layout-dropdown').classList.remove('open');
+  });
 });
 
 function switchLayout(name) {
@@ -484,8 +576,15 @@ function switchLayout(name) {
   keyboardSelectedIndex = -1;
   localStorage.setItem('agents-hq-layout', name);
 
-  // Update buttons
-  document.querySelectorAll('.layout-btn').forEach(b => b.classList.toggle('active', b.dataset.layout === name));
+  // Update options + button label
+  let activeLabel = name.toUpperCase();
+  document.querySelectorAll('.layout-option').forEach(b => {
+    const isActive = b.dataset.layout === name;
+    b.classList.toggle('active', isActive);
+    if (isActive) activeLabel = b.textContent.trim();
+  });
+  const currentEl = document.getElementById('layout-current');
+  if (currentEl) currentEl.textContent = activeLabel;
 
   // Toggle view containers
   document.querySelectorAll('.view-container').forEach(v => v.classList.remove('active'));
@@ -653,6 +752,27 @@ function drawSphere(ctx, sx, sy, r, color, abbrev, status, agentId) {
   ctx.fillText(abbrev, sx, sy + 1);
 
   ctx.restore();
+
+  // Attention red dot (top-right) — agent is waiting on user input
+  const aState = agentId ? agentStates[agentId] : null;
+  if (isAwaitingAttention(aState)) {
+    const dotR = Math.max(3, r * 0.32);
+    const dx = sx + r * 0.72;
+    const dy = sy - r * 0.72;
+    const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 250);
+    ctx.save();
+    ctx.shadowColor = '#ff3b30';
+    ctx.shadowBlur = dotR * 2.2 * pulse;
+    ctx.fillStyle = '#ff3b30';
+    ctx.beginPath();
+    ctx.arc(dx, dy, dotR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = Math.max(1, dotR * 0.25);
+    ctx.strokeStyle = '#070a12';
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function darkenColor(color, factor) {
@@ -1135,7 +1255,8 @@ function renderList() {
     for (const agent of projectAgents) {
       const state = agentStates[agent.agentId] || { status: 'offline' };
       const row = document.createElement('div');
-      row.className = `list-row ${state.status}`;
+      const attn = isAwaitingAttention(state);
+      row.className = `list-row ${state.status}${attn ? ' awaiting-user' : ''}`;
       row.id = `list-agent-${agent.agentId}`;
 
       const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
@@ -1143,8 +1264,11 @@ function renderList() {
       const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '\u2014';
       const displayName = getDisplayName(agent);
 
+      const attnBadge = attn
+        ? `<span class="attn-badge" title="${(state.awaitingMessage || 'Waiting on user input').replace(/"/g, '&quot;')}">⚠ ATTN</span>`
+        : '';
       row.innerHTML = `
-        <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span></span>
+        <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span>${attnBadge}</span>
         <span class="list-col col-agent"><span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>${displayName}</span>
         <span class="list-col col-type">${agent.agentType}</span>
         <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
@@ -1163,15 +1287,19 @@ function updateList(agentId) {
   const agent = getAgentById(agentId);
   if (!agent) return;
   const state = agentStates[agentId] || { status: 'offline' };
-  row.className = `list-row ${state.status}`;
+  const attn = isAwaitingAttention(state);
+  row.className = `list-row ${state.status}${attn ? ' awaiting-user' : ''}`;
 
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
   const taskText = state.currentTask || '\u2014';
   const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '\u2014';
   const displayName = getDisplayName(agent);
+  const attnBadge = attn
+    ? `<span class="attn-badge" title="${(state.awaitingMessage || 'Waiting on user input').replace(/"/g, '&quot;')}">\u26a0 ATTN</span>`
+    : '';
 
   row.innerHTML = `
-    <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span></span>
+    <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span>${attnBadge}</span>
     <span class="list-col col-agent"><span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>${displayName}</span>
     <span class="list-col col-type">${agent.agentType}</span>
     <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
@@ -1234,8 +1362,9 @@ function renderCards() {
 }
 
 function createCard(agent, state) {
+  const attn = isAwaitingAttention(state);
   const card = document.createElement('div');
-  card.className = `agent-card ${state.status}`;
+  card.className = `agent-card ${state.status}${attn ? ' awaiting-user' : ''}`;
   card.id = `card-agent-${agent.agentId}`;
   card.style.setProperty('--agent-color', agent.color);
 
@@ -1244,6 +1373,9 @@ function createCard(agent, state) {
   const toolHtml = state.currentTool ? `<span class="card-tool" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '';
   const statusLabel = state.status.toUpperCase();
   const displayName = getDisplayName(agent);
+  const attnBanner = attn
+    ? `<div class="card-attn-banner" title="${(state.awaitingMessage || '').replace(/"/g, '&quot;')}">\u26a0 NEEDS YOUR INPUT${state.awaitingMessage ? ` \u00b7 ${state.awaitingMessage}` : ''}</div>`
+    : '';
 
   card.innerHTML = `
     <div class="card-header">
@@ -1254,6 +1386,7 @@ function createCard(agent, state) {
       </div>
       <span class="card-status-badge">${statusLabel}</span>
     </div>
+    ${attnBanner}
     <div class="card-task">${taskText}</div>
     <div class="card-footer">
       <div>${toolHtml}</div>
@@ -1330,13 +1463,17 @@ function renderTreeNode(node, depth, container) {
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
   const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '';
 
+  const attn = isAwaitingAttention(state);
   const row = document.createElement('div');
-  row.className = `tree-node ${state.status}`;
+  row.className = `tree-node ${state.status}${attn ? ' awaiting-user' : ''}`;
   row.id = `tree-agent-${agent.agentId}`;
   row.style.paddingLeft = `${16 + depth * 20}px`;
 
   const toggleArrow = hasChildren ? (isCollapsed ? '\u25b6' : '\u25bc') : '';
   const childCount = hasChildren ? `<span class="tree-children-count">(${children.length})</span>` : '';
+  const attnBadge = attn
+    ? `<span class="attn-badge" title="${(state.awaitingMessage || 'Waiting on user input').replace(/"/g, '&quot;')}">\u26a0 ATTN</span>`
+    : '';
 
   row.innerHTML = `
     <span class="tree-toggle">${toggleArrow}</span>
@@ -1345,6 +1482,7 @@ function renderTreeNode(node, depth, container) {
     <span class="tree-agent-name">${displayName}</span>
     ${childCount}
     <span class="tree-agent-type">${agent.agentType}</span>
+    ${attnBadge}
     ${toolHtml}
     <span class="time-text">${timeSince}</span>
   `;
@@ -1647,6 +1785,23 @@ function drawTimeline() {
     ctx.beginPath();
     ctx.roundRect(badgeX, badgeY, 30, 16, 2);
     ctx.fill();
+
+    // Attention red dot on badge (top-right corner)
+    if (isAwaitingAttention(state)) {
+      const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 250);
+      ctx.save();
+      ctx.shadowColor = '#ff3b30';
+      ctx.shadowBlur = 6 * pulse;
+      ctx.fillStyle = '#ff3b30';
+      ctx.beginPath();
+      ctx.arc(badgeX + 30, badgeY, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#070a12';
+      ctx.stroke();
+      ctx.restore();
+    }
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 8px "JetBrains Mono", monospace';
     ctx.textAlign = 'center';
@@ -2367,7 +2522,15 @@ function renderAgentDetail() {
     richTask = state.toolDetail.summary;
   }
 
+  const attnSection = isAwaitingAttention(state)
+    ? `<div class="detail-attn-banner">
+         <div class="detail-attn-title">⚠ AWAITING USER INPUT</div>
+         <div class="detail-attn-msg">${state.awaitingMessage || 'Claude is waiting on you.'}</div>
+         ${state.awaitingSince ? `<div class="detail-attn-since">since ${getTimeSince(state.awaitingSince)}</div>` : ''}
+       </div>`
+    : '';
   document.getElementById('agent-detail-status').innerHTML = `
+    ${attnSection}
     <div class="detail-status-grid">
       <div class="detail-stat">
         <div class="detail-stat-label">LAST ACTIVE</div>
@@ -2598,39 +2761,132 @@ function sendDesktopNotification(title, body, tag) {
   }
 }
 
+// Always leave a 🔔 trail in the activity log so a sound is never "ghost"
+function logNotification(agentId, agentName, reason, detail) {
+  if (!activityLogEl) return;
+  const el = document.createElement('div');
+  el.className = 'log-entry log-bell';
+  const t = new Date().toLocaleTimeString();
+  const detailHtml = detail ? ` <span class="transition">${String(detail).replace(/</g, '&lt;')}</span>` : '';
+  const nameHtml = agentId
+    ? `<span class="agent-ref" data-agent-id="${agentId}">${agentName || `@${agentId}`}</span>`
+    : `<span class="transition">${agentName || ''}</span>`;
+  el.innerHTML = `<span class="time">${t}</span> <span class="marker">[🔔]</span> ${nameHtml} <span class="transition">${reason}</span>${detailHtml}`;
+  activityLogEl.insertBefore(el, activityLogEl.firstChild);
+  while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
+}
+
 function notifyAgentEvent(agentId, agentName, oldStatus, newStatus) {
-  if (notifyLevel === 'off') return;
-
   const isCrash = oldStatus === 'active' && newStatus === 'offline';
+  if (isCrash) {
+    if (!notifyFlags.crashes && !notifyFlags.status) return;
+  } else {
+    if (!notifyFlags.status) return;
+  }
 
-  if (notifyLevel === 'crashes' && !isCrash) return;
-
-  // notifyLevel === 'status' catches all transitions
   if (isCrash) {
     playNotifyBeep(440);
     sendDesktopNotification('Agent Offline', `${agentName} went offline unexpectedly`, `offline-${agentId}`);
+    logNotification(agentId, agentName, 'crashed', `active → offline`);
   } else if (newStatus === 'offline') {
     playNotifyBeep(330);
     sendDesktopNotification('Agent Offline', `${agentName} is now offline`, `offline-${agentId}`);
+    logNotification(agentId, agentName, 'went offline', `${oldStatus} → offline`);
   } else if (newStatus === 'active' && oldStatus !== 'active') {
     playNotifyBeep(660);
     sendDesktopNotification('Agent Active', `${agentName} is now active`, `active-${agentId}`);
+    logNotification(agentId, agentName, 'became active', `${oldStatus} → active`);
   } else if (newStatus === 'idle') {
     sendDesktopNotification('Agent Idle', `${agentName} is now idle`, `idle-${agentId}`);
+    // no beep — log only if sound mode would have fired, skipped here for noise
   }
 }
 
+function notifyAttentionRequired(agentId, agentName, message) {
+  if (!notifyFlags.attention) return;
+  playNotifyBeep(880);
+  setTimeout(() => playNotifyBeep(660), 180);
+  sendDesktopNotification(
+    `${agentName} needs attention`,
+    message || 'Claude is waiting on user input',
+    `attention-${agentId}`
+  );
+  // Sticky grace so the red dot remains visible even if PreToolUse clears
+  // awaitingUser immediately after Notification fires.
+  attentionGrace[agentId] = { until: Date.now() + ATTENTION_GRACE_MS, message: message || '' };
+  logNotification(agentId, agentName, 'needs attention', message);
+  setTimeout(() => {
+    if (attentionGrace[agentId] && attentionGrace[agentId].until <= Date.now()) {
+      delete attentionGrace[agentId];
+      if (typeof updateView === 'function') updateView(agentId);
+      if (typeof updateStats === 'function') updateStats();
+    }
+  }, ATTENTION_GRACE_MS + 50);
+}
+
 function updateStats() {
-  let active = 0, idle = 0, offline = 0;
+  let active = 0, idle = 0, offline = 0, awaiting = 0;
   const allIds = new Set([...agentRegistry.map(a => a.agentId), ...Object.keys(agentStates)]);
   for (const id of allIds) {
     const state = agentStates[id];
     if (!state || state.status === 'offline') offline++;
     else if (state.status === 'active') active++;
     else if (state.status === 'idle') idle++;
+    if (isAwaitingAttention(state)) awaiting++;
   }
   const total = allIds.size;
-  teamStatsEl.innerHTML = `[ <span class="stat-active">${active} ACTIVE</span> | <span class="stat-idle">${idle} IDLE</span> | ${offline} OFFLINE | ${total} TOTAL ]`;
+  const awaitingChip = awaiting > 0
+    ? `<span class="stat-attention" id="stat-attention-chip" title="${awaiting} agent${awaiting > 1 ? 's' : ''} waiting on user input — click to jump">⚠ ${awaiting} ATTN</span> | `
+    : '';
+  teamStatsEl.innerHTML = `[ ${awaitingChip}<span class="stat-active">${active} ACTIVE</span> | <span class="stat-idle">${idle} IDLE</span> | ${offline} OFFLINE | ${total} TOTAL ]`;
+  setAttentionIndicators(awaiting);
+}
+
+// Tab title + favicon dot when agents need attention
+const BASE_TITLE = 'Agents HQ - Live';
+let _faviconBase = null;
+let _faviconAlert = null;
+let _faviconLink = document.querySelector('link[rel="icon"]');
+
+(function preloadFaviconVariants() {
+  const img = new Image();
+  img.onload = () => {
+    const draw = (withDot) => {
+      const c = document.createElement('canvas');
+      c.width = 64; c.height = 64;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, 64, 64);
+      if (withDot) {
+        // Red dot, top-right
+        ctx.beginPath();
+        ctx.arc(48, 16, 14, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff3b30';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#070a12';
+        ctx.stroke();
+      }
+      return c.toDataURL('image/png');
+    };
+    _faviconBase = draw(false);
+    _faviconAlert = draw(true);
+    // Re-evaluate now that the variants exist
+    try { updateStats(); } catch {}
+  };
+  img.onerror = () => console.warn('[favicon] failed to load favicon.svg');
+  img.src = 'favicon.svg';
+})();
+
+function setAttentionIndicators(count) {
+  // Tab title
+  document.title = count > 0 ? `(${count}⚠) ${BASE_TITLE}` : BASE_TITLE;
+  // Favicon swap (skip until variants loaded)
+  if (!_faviconLink || !_faviconAlert) return;
+  const target = count > 0 ? _faviconAlert : (_faviconBase || 'favicon.svg');
+  if (_faviconLink.getAttribute('href') !== target) {
+    _faviconLink.setAttribute('type', 'image/png');
+    _faviconLink.setAttribute('href', target);
+  }
 }
 
 function updateView(agentId) {
@@ -2696,6 +2952,14 @@ function connect() {
             const el = document.createElement('div');
             el.className = 'log-entry';
             el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[T]</span> <span class="agent-ref" data-agent-id="${entry.agentId}">${name}</span> <span class="transition">${entry.toolCount} tools from transcript</span>`;
+            activityLogEl.appendChild(el);
+          } else if (entry.type === 'attention') {
+            const agentInfo = getAgentById(entry.agentId);
+            const name = agentInfo ? getDisplayName(agentInfo) : `@${(entry.agentId || '').substring(0, 8)}`;
+            const el = document.createElement('div');
+            el.className = 'log-entry log-attention';
+            const msg = (entry.message || 'waiting on user').replace(/</g, '&lt;');
+            el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[⚠]</span> <span class="agent-ref" data-agent-id="${entry.agentId}">${name}</span> <span class="transition">${msg}</span>`;
             activityLogEl.appendChild(el);
           } else {
             const agentInfo = getAgentById(entry.agentId);
@@ -2846,6 +3110,22 @@ function connect() {
         notifyAgentEvent(agentId, name, oldStatus, agent.status);
       }
 
+      // Attention required transition (Notification hook)
+      const wasAttn = isAwaitingAttention(oldState);
+      const isAttn = isAwaitingAttention(agent);
+      if (!wasAttn && isAttn) {
+        const agentInfo = getAgentById(agentId);
+        const name = agentInfo ? getDisplayName(agentInfo) : `@${agentId}`;
+        notifyAttentionRequired(agentId, name, agent.awaitingMessage);
+        const el = document.createElement('div');
+        el.className = 'log-entry log-attention';
+        const msg = (agent.awaitingMessage || 'waiting on user').replace(/</g, '&lt;');
+        const t = new Date().toLocaleTimeString();
+        el.innerHTML = `<span class="time">${t}</span> <span class="marker">[⚠]</span> <span class="agent-ref" data-agent-id="${agentId}">${name}</span> <span class="transition">${msg}</span>`;
+        activityLogEl.insertBefore(el, activityLogEl.firstChild);
+        while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
+      }
+
       agentStates[agentId] = agent;
       updateView(agentId);
       updateStats();
@@ -2909,6 +3189,7 @@ document.addEventListener('keydown', (e) => {
     document.getElementById('theme-dropdown').classList.remove('open');
     document.getElementById('cleanup-dropdown').classList.remove('open');
     document.getElementById('notify-dropdown').classList.remove('open');
+    document.getElementById('layout-dropdown').classList.remove('open');
     return;
   }
 
