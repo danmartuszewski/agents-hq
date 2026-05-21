@@ -57,7 +57,10 @@ function esc(s) {
 }
 function getAwaitingKind(state) {
   if (!state) return null;
-  if (state.awaitingUser) return 'attention';
+  // Trust the server's classification: when an idle-wait Notification arrives
+  // after a Stop hook, the server tags awaitingKind='finished' so we don't
+  // flash the red ATTN dot for a turn Claude already completed.
+  if (state.awaitingUser) return state.awaitingKind || 'attention';
   const agentId = state.agentId;
   if (agentId && isInAttentionGrace(agentId)) {
     return attentionGrace[agentId].kind || 'attention';
@@ -2851,7 +2854,6 @@ function notifyAgentEvent(agentId, agentName, oldStatus, newStatus) {
     sendDesktopNotification('Agent Offline', `${agentName} is now offline`, `offline-${agentId}`);
     logNotification(agentId, agentName, 'went offline', `${oldStatus} → offline`);
   } else if (newStatus === 'active' && oldStatus !== 'active') {
-    playNotifyBeep(660);
     sendDesktopNotification('Agent Active', `${agentName} is now active`, `active-${agentId}`);
     logNotification(agentId, agentName, 'became active', `${oldStatus} → active`);
   } else if (newStatus === 'idle') {
