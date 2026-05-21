@@ -206,6 +206,17 @@ Add hooks to `~/.claude/settings.json` so every Claude Code session reports to t
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/agents-hq/.claude/hooks/agent-tracker.js Stop"
+          }
+        ]
+      }
     ]
   }
 }
@@ -225,8 +236,9 @@ If you only want tracking for one project, add the same hooks to that project's 
 - `PostToolUse` - fires after a tool finishes. Clears the tool indicator and records duration.
 - `SubagentStart` - agent appears on the dashboard as active.
 - `SubagentStop` - agent goes offline. The hook parses the subagent's transcript to extract all tool calls made during its lifetime, since PreToolUse/PostToolUse don't fire for subagent processes.
-- `Notification` - fires when Claude needs the user (tool-permission prompt or idle wait). Sets an "awaiting user" flag that pulses a `⚠ ATTN` badge on the agent's row/card and pops a desktop notification. Main-session only — Claude Code does not fire this for subagents.
-- `UserPromptSubmit` - fires when the user submits a new prompt. Clears the awaiting flag. `PreToolUse` also clears it implicitly, so this hook is optional but recommended for snappier UI.
+- `Notification` - fires when Claude needs the user (tool-permission prompt or idle wait). Combined with `Stop`, the dashboard classifies the signal as either **attention** (red dot, beep — permission/question mid-task) or **finished** (green dot, silent — idle wait after the turn ended). Main-session only — Claude Code does not fire this for subagents.
+- `Stop` - fires when Claude finishes responding. Marks the agent as "turn finished" so a follow-up `Notification` is treated as an idle wait rather than a real ask.
+- `UserPromptSubmit` - fires when the user submits a new prompt. Clears the awaiting and finished flags. `PreToolUse` also clears them, so this hook is optional but recommended for snappier UI.
 
 Main sessions (no `agent_id`) are tracked via `session_id` and show as type `lead`. Subagents use `agent_id` directly.
 

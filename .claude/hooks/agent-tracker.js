@@ -261,6 +261,16 @@ process.stdin.on('end', () => {
       sendBody(body);
       break;
 
+    case 'Stop':
+      body = {
+        hookEvent: 'Stop',
+        cwd,
+        sessionId
+      };
+      if (agentType) body.agentType = agentType;
+      sendBody(body);
+      break;
+
     default:
       process.exit(0);
   }

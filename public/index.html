@@ -18,12 +18,9 @@
         <div id="notify-dropdown">
           <div class="cleanup-section-title">NOTIFY ON</div>
           <div class="cleanup-option notify-check-option" data-flag="attention"><span class="check-mark">☑</span> Attention needed</div>
+          <div class="cleanup-option notify-check-option" data-flag="finished"><span class="check-mark">☐</span> Turn finished</div>
           <div class="cleanup-option notify-check-option" data-flag="crashes"><span class="check-mark">☑</span> Crashes</div>
           <div class="cleanup-option notify-check-option" data-flag="status"><span class="check-mark">☐</span> All status changes</div>
-          <div class="theme-divider"></div>
-          <div class="cleanup-section-title">ATTENTION ON</div>
-          <div class="cleanup-option attn-mode-option" data-mode="active">When Claude is asking</div>
-          <div class="cleanup-option attn-mode-option selected" data-mode="all">Asking + idle waits</div>
           <div class="theme-divider"></div>
           <div class="cleanup-section-title">SOUND</div>
           <div class="cleanup-option notify-sound-option selected" data-sound="on">On</div>
@@ -147,7 +144,13 @@
             <div id="agent-detail-tools"></div>
           </div>
           <div class="detail-section">
-            <div class="detail-section-title">EVENT LOG</div>
+            <div class="detail-section-title detail-log-header">
+              <span>EVENT LOG</span>
+              <div class="detail-log-filter-wrap">
+                <input type="text" id="agent-log-filter" class="detail-log-filter" placeholder="filter..." autocomplete="off" spellcheck="false">
+                <button type="button" id="agent-log-filter-clear" class="detail-log-filter-clear" title="Clear filter" aria-label="Clear filter">×</button>
+              </div>
+            </div>
             <div id="agent-detail-log"></div>
           </div>
         </div>

@@ -203,12 +203,40 @@ app.post('/api/agent/:id/status', (req, res) => {
   if (lastToolDuration !== null) updated.lastToolDuration = lastToolDuration;
   if (hookEvent === 'PostToolUse' && postToolName) updated.lastCompletedTool = postToolName;
 
+  // Track whether Claude's last turn ended (Stop hook). Used to distinguish
+  // "needs attention" (permission/question mid-task) from "finished + idle wait"
+  // when a Notification fires.
+  if (hookEvent === 'Stop') {
+    updated.finishedTurn = true;
+    updated.finishedSince = new Date().toISOString();
+  } else if (
+    hookEvent === 'PreToolUse' ||
+    hookEvent === 'UserPromptSubmit' ||
+    hookEvent === 'SubagentStart'
+  ) {
+    if (updated.finishedTurn) {
+      updated.finishedTurn = false;
+      delete updated.finishedSince;
+    }
+  }
+
   // Attention required (Claude Code Notification hook) — main session only,
   // Claude is asking the user for permission or has been idle waiting on input.
   if (hookEvent === 'Notification' || awaitingUser === true) {
     updated.awaitingUser = true;
     updated.awaitingMessage = awaitingMessage || updated.awaitingMessage || '';
     updated.awaitingSince = existing.awaitingUser ? (existing.awaitingSince || new Date().toISOString()) : new Date().toISOString();
+    // Classify: permission asks always "attention". Idle waits after Stop are "finished".
+    const msg = (awaitingMessage || '').toLowerCase();
+    const isPermission = msg.includes('permission');
+    const wasFinished = !!existing.finishedTurn;
+    if (isPermission) {
+      updated.awaitingKind = 'attention';
+    } else if (wasFinished) {
+      updated.awaitingKind = 'finished';
+    } else {
+      updated.awaitingKind = 'attention';
+    }
   } else if (
     awaitingUser === false ||
     hookEvent === 'UserPromptSubmit' ||
@@ -220,6 +248,7 @@ app.post('/api/agent/:id/status', (req, res) => {
       updated.awaitingUser = false;
       delete updated.awaitingMessage;
       delete updated.awaitingSince;
+      delete updated.awaitingKind;
     }
   }
 
@@ -454,6 +483,11 @@ setInterval(() => {
           state.awaitingUser = false;
           delete state.awaitingMessage;
           delete state.awaitingSince;
+          delete state.awaitingKind;
+        }
+        if (state.finishedTurn) {
+          state.finishedTurn = false;
+          delete state.finishedSince;
         }
       }
       const filename = state._filename || `${id}.json`;

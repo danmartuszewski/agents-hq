@@ -67,7 +67,8 @@ Hooks to add (replace `{{REPO_PATH}}` with the value from step 2):
     "SubagentStart": [{"matcher": "", "hooks": [{"type": "command", "command": "node {{REPO_PATH}}/.claude/hooks/agent-tracker.js SubagentStart"}]}],
     "SubagentStop": [{"matcher": "", "hooks": [{"type": "command", "command": "node {{REPO_PATH}}/.claude/hooks/agent-tracker.js SubagentStop"}]}],
     "Notification": [{"matcher": "", "hooks": [{"type": "command", "command": "node {{REPO_PATH}}/.claude/hooks/agent-tracker.js Notification"}]}],
-    "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "node {{REPO_PATH}}/.claude/hooks/agent-tracker.js UserPromptSubmit"}]}]
+    "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "node {{REPO_PATH}}/.claude/hooks/agent-tracker.js UserPromptSubmit"}]}],
+    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "node {{REPO_PATH}}/.claude/hooks/agent-tracker.js Stop"}]}]
   }
 }
 ```

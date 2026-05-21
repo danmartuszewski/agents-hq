@@ -34,6 +34,7 @@ body, body[data-theme="matrix"] {
   --status-idle-bg: rgba(245, 166, 35, 0.15);
   --status-offline: #444;
   --status-offline-text: #8e8e8e;
+  --status-attention: #ff3b30;
   --tool-accent: #f5a623;
   --tool-bg: rgba(245, 166, 35, 0.15);
   --scrollbar-track: #0a0f0a;
@@ -929,7 +930,7 @@ body {
 .team-stats .stat-idle { color: var(--status-idle); }
 .team-stats .stat-attention {
   color: #fff;
-  background: var(--status-idle);
+  background: var(--status-attention);
   padding: 1px 8px;
   border-radius: 3px;
   letter-spacing: 1px;
@@ -939,8 +940,8 @@ body {
 .team-stats .stat-attention:hover { filter: brightness(1.15); }
 
 @keyframes attn-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-idle) 70%, transparent); }
-  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--status-idle) 0%, transparent); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-attention) 70%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--status-attention) 0%, transparent); }
 }
 
 /* ---- Attention indicator (Notification hook) ---- */
@@ -952,23 +953,25 @@ body {
   letter-spacing: 1px;
   padding: 2px 6px;
   border-radius: 3px;
-  background: var(--status-idle);
+  background: var(--status-attention);
   color: #fff;
   animation: attn-pulse 1.4s ease-in-out infinite;
+  white-space: nowrap;
+  cursor: help;
 }
 
 .list-row.awaiting-user,
 .agent-card.awaiting-user,
 .tree-node.awaiting-user {
-  background: color-mix(in srgb, var(--status-idle) 8%, transparent);
+  background: color-mix(in srgb, var(--status-attention) 8%, transparent);
 }
 .list-row.awaiting-user:hover,
 .tree-node.awaiting-user:hover {
-  background: color-mix(in srgb, var(--status-idle) 14%, transparent);
+  background: color-mix(in srgb, var(--status-attention) 14%, transparent);
 }
 .agent-card.awaiting-user {
-  border-color: var(--status-idle);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--status-idle) 50%, transparent);
+  border-color: var(--status-attention);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--status-attention) 50%, transparent);
 }
 
 /* Red attention dot overlay on agent abbreviation badges (list/cards/tree) */
@@ -982,32 +985,32 @@ body {
 .agent-card.awaiting-user .card-orb::after {
   content: '';
   position: absolute;
-  top: -3px;
-  right: -3px;
-  width: 9px;
-  height: 9px;
+  top: -4px;
+  right: -4px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  background: #ff3b30;
-  border: 1.5px solid var(--bg);
-  box-shadow: 0 0 6px rgba(255, 59, 48, 0.9);
+  background: var(--status-attention);
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--status-attention) 95%, transparent);
   animation: attn-pulse-dot 1.2s ease-in-out infinite;
 }
 .agent-card.awaiting-user .card-orb::after {
-  width: 12px;
-  height: 12px;
-  top: -4px;
-  right: -4px;
+  width: 14px;
+  height: 14px;
+  top: -5px;
+  right: -5px;
 }
 @keyframes attn-pulse-dot {
-  0%, 100% { box-shadow: 0 0 6px rgba(255, 59, 48, 0.9); transform: scale(1); }
-  50%      { box-shadow: 0 0 12px rgba(255, 59, 48, 1); transform: scale(1.15); }
+  0%, 100% { box-shadow: 0 0 8px color-mix(in srgb, var(--status-attention) 95%, transparent); transform: scale(1); }
+  50%      { box-shadow: 0 0 16px var(--status-attention); transform: scale(1.2); }
 }
 
 .card-attn-banner {
   margin: 8px 0;
   padding: 6px 8px;
-  background: color-mix(in srgb, var(--status-idle) 20%, transparent);
-  border-left: 3px solid var(--status-idle);
+  background: color-mix(in srgb, var(--status-attention) 20%, transparent);
+  border-left: 3px solid var(--status-attention);
   color: var(--text-bright);
   font-size: 11px;
   border-radius: 2px;
@@ -1016,15 +1019,15 @@ body {
 .detail-attn-banner {
   margin-bottom: 10px;
   padding: 10px 12px;
-  background: color-mix(in srgb, var(--status-idle) 18%, transparent);
-  border-left: 3px solid var(--status-idle);
+  background: color-mix(in srgb, var(--status-attention) 18%, transparent);
+  border-left: 3px solid var(--status-attention);
   border-radius: 2px;
 }
 .detail-attn-title {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 2px;
-  color: var(--status-idle);
+  color: var(--status-attention);
   margin-bottom: 4px;
 }
 .detail-attn-msg {
@@ -1038,7 +1041,7 @@ body {
   color: var(--text-dim);
 }
 
-.log-entry.log-attention .marker { color: var(--status-idle); }
+.log-entry.log-attention .marker { color: var(--status-attention); }
 .log-entry.log-attention { color: var(--text-bright); }
 .log-entry.log-bell {
   color: var(--text-bright);
@@ -1254,9 +1257,10 @@ body {
   align-items: flex-start;
   padding: 10px 16px;
   border-bottom: 1px solid var(--border-faint);
+  border-left: 2px solid transparent;
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.3s, opacity 0.3s;
+  transition: background 0.3s, opacity 0.3s, border-left-color 0.3s;
 }
 
 .list-row:hover {
@@ -1265,6 +1269,7 @@ body {
 
 .list-row.active {
   color: var(--text-bright);
+  border-left-color: var(--status-active);
 }
 
 .list-row.idle {
@@ -1658,6 +1663,72 @@ body {
   color: var(--accent-dim);
   letter-spacing: 2px;
   margin-bottom: 10px;
+}
+
+.detail-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.detail-log-filter-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.detail-log-filter {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 400;
+  padding: 3px 22px 3px 8px;
+  border-radius: 3px;
+  width: 120px;
+  outline: none;
+  transition: border-color 0.2s, width 0.2s;
+}
+
+.detail-log-filter::placeholder {
+  color: var(--text-dim);
+}
+
+.detail-log-filter:focus {
+  border-color: var(--accent-dim);
+  width: 160px;
+}
+
+.detail-log-filter-clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 14px;
+  text-align: center;
+  cursor: pointer;
+  display: none;
+  font-family: inherit;
+}
+
+.detail-log-filter-wrap.has-text .detail-log-filter-clear {
+  display: block;
+}
+
+.detail-log-filter-clear:hover {
+  background: var(--accent-dim);
+  color: var(--bg);
 }
 
 .detail-status-grid {
@@ -2085,9 +2156,10 @@ body {
   align-items: center;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border-faint);
+  border-left: 2px solid transparent;
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.3s, opacity 0.3s;
+  transition: background 0.3s, opacity 0.3s, border-left-color 0.3s;
   position: relative;
 }
 
@@ -2107,6 +2179,7 @@ body {
 
 .tree-node.active {
   color: var(--text-bright);
+  border-left-color: var(--status-active);
 }
 
 .tree-indent {

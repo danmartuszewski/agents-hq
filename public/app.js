@@ -24,37 +24,25 @@ let notificationsPermission = Notification.permission;
 
 // Notify flags (multi-select). Migrates old 'agents-hq-notify-level' if present.
 const notifyFlags = (() => {
+  const fillDefaults = (f) => ({ attention: true, crashes: true, status: false, finished: false, ...(f || {}) });
   const stored = localStorage.getItem('agents-hq-notify-flags');
-  if (stored) { try { return JSON.parse(stored); } catch {} }
+  if (stored) { try { return fillDefaults(JSON.parse(stored)); } catch {} }
   const legacy = localStorage.getItem('agents-hq-notify-level');
-  if (legacy === 'off')       return { attention: false, crashes: false, status: false };
-  if (legacy === 'attention') return { attention: true,  crashes: false, status: false };
-  if (legacy === 'status')    return { attention: true,  crashes: true,  status: true  };
-  // default + legacy 'crashes'
-  return { attention: true, crashes: true, status: false };
+  if (legacy === 'off')       return fillDefaults({ attention: false, crashes: false, status: false });
+  if (legacy === 'attention') return fillDefaults({ attention: true,  crashes: false, status: false });
+  if (legacy === 'status')    return fillDefaults({ attention: true,  crashes: true,  status: true  });
+  return fillDefaults();
 })();
 function saveNotifyFlags() {
   localStorage.setItem('agents-hq-notify-flags', JSON.stringify(notifyFlags));
 }
 
-// Attention mode: 'active' (only when Claude is asking) | 'all' (also idle waits). Default 'all'.
-let attentionMode = localStorage.getItem('agents-hq-attention-mode') || 'all';
-
 // Claude Code emits these Notification messages today (Nov 2025):
 //   permission ask : "Claude needs your permission to use <Tool>"
 //   question ask   : "Claude is asking a question"
 //   60s idle wait  : "Claude is waiting for your input"
-// Anything else is treated as an active ask (safer default — surface it).
-function isIdleWait(message) {
-  const m = (message || '').trim().toLowerCase();
-  if (!m) return true; // empty message → treat as idle
-  return m === 'claude is waiting for your input'
-      || m.startsWith('claude is waiting for your input');
-}
-function shouldNotifyForMessage(message) {
-  if (attentionMode === 'all') return true;
-  return !isIdleWait(message);
-}
+// Idle waits after a Stop are routed through the finished-turn path, so any
+// Notification that reaches the attention path is a real mid-task ask.
 
 // HTML-escape for any payload that might originate from Claude Code's hook
 // data (awaitingMessage, currentTask, etc.). All Notification messages flow
@@ -67,16 +55,18 @@ function esc(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+function getAwaitingKind(state) {
+  if (!state) return null;
+  if (state.awaitingUser) return 'attention';
+  const agentId = state.agentId;
+  if (agentId && isInAttentionGrace(agentId)) {
+    return attentionGrace[agentId].kind || 'attention';
+  }
+  return null;
+}
 function isAwaitingAttention(state) {
   if (!state) return false;
-  if (state.awaitingUser) {
-    if (attentionMode === 'all') return true;
-    return !isIdleWait(state.awaitingMessage);
-  }
-  // Grace: keep showing the indicator briefly after a Notification fired so
-  // the user has time to see the red dot before PreToolUse clears it.
-  const agentId = state.agentId;
-  return agentId ? isInAttentionGrace(agentId) : false;
+  return getAwaitingKind(state) === 'attention';
 }
 
 // Attention lifecycle (two-stage model):
@@ -448,9 +438,6 @@ function updateNotifyUI() {
     if (mark) mark.textContent = on ? '☑' : '☐';
     opt.classList.toggle('selected', on);
   });
-  document.querySelectorAll('.attn-mode-option').forEach(opt => {
-    opt.classList.toggle('selected', opt.dataset.mode === attentionMode);
-  });
   document.querySelectorAll('.notify-sound-option').forEach(opt => {
     opt.classList.toggle('selected', opt.dataset.sound === (notifySound ? 'on' : 'off'));
   });
@@ -483,18 +470,6 @@ document.querySelectorAll('.notify-check-option').forEach(opt => {
     saveNotifyFlags();
     updateNotifyUI();
     // keep dropdown open so user can toggle multiple
-  });
-});
-
-document.querySelectorAll('.attn-mode-option').forEach(opt => {
-  opt.addEventListener('click', (e) => {
-    e.stopPropagation();
-    attentionMode = opt.dataset.mode;
-    localStorage.setItem('agents-hq-attention-mode', attentionMode);
-    updateNotifyUI();
-    if (typeof renderCurrentLayout === 'function') renderCurrentLayout();
-    if (typeof updateStats === 'function') updateStats();
-    if (typeof selectedAgentId !== 'undefined' && selectedAgentId) renderAgentDetail();
   });
 });
 
@@ -784,22 +759,23 @@ function drawSphere(ctx, sx, sy, r, color, abbrev, status, agentId) {
 
   ctx.restore();
 
-  // Attention red dot (top-right) — agent is waiting on user input
+  // Attention red dot (top-right) — agent is waiting on user input mid-task.
   const aState = agentId ? agentStates[agentId] : null;
   if (isAwaitingAttention(aState)) {
-    const dotR = Math.max(3, r * 0.32);
+    const color = '#ff3b30';
+    const dotR = Math.max(3, r * 0.36);
     const dx = sx + r * 0.72;
     const dy = sy - r * 0.72;
     const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 250);
     ctx.save();
-    ctx.shadowColor = '#ff3b30';
-    ctx.shadowBlur = dotR * 2.2 * pulse;
-    ctx.fillStyle = '#ff3b30';
+    ctx.shadowColor = color;
+    ctx.shadowBlur = dotR * 2.4 * pulse;
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(dx, dy, dotR, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
-    ctx.lineWidth = Math.max(1, dotR * 0.25);
+    ctx.lineWidth = Math.max(1, dotR * 0.3);
     ctx.strokeStyle = '#070a12';
     ctx.stroke();
     ctx.restore();
@@ -1819,13 +1795,14 @@ function drawTimeline() {
 
     // Attention red dot on badge (top-right corner)
     if (isAwaitingAttention(state)) {
+      const color = '#ff3b30';
       const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 250);
       ctx.save();
-      ctx.shadowColor = '#ff3b30';
-      ctx.shadowBlur = 6 * pulse;
-      ctx.fillStyle = '#ff3b30';
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 7 * pulse;
+      ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(badgeX + 30, badgeY, 4, 0, Math.PI * 2);
+      ctx.arc(badgeX + 30, badgeY, 4.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.shadowBlur = 0;
       ctx.lineWidth = 1;
@@ -2618,19 +2595,68 @@ function renderAgentDetail() {
   }
 
   // Event log
-  if (logs.length === 0) {
-    document.getElementById('agent-detail-log').innerHTML = '<div class="detail-no-logs">No events recorded yet</div>';
-  } else {
-    document.getElementById('agent-detail-log').innerHTML = logs.slice(0, 30).map(log => {
-      let html = `<div class="detail-log-entry"><span class="dl-time">${log.timeStr}</span>`;
-      html += `<span class="dl-status">${log.oldStatus} > ${log.newStatus}</span>`;
-      if (log.tool) html += ` <span class="dl-tool">${log.tool}</span>`;
-      if (log.task) html += `<br><span class="dl-task">${log.task}</span>`;
-      html += '</div>';
-      return html;
-    }).join('');
-  }
+  renderAgentDetailLog();
 }
+
+let agentLogFilter = '';
+function renderAgentDetailLog() {
+  const logEl = document.getElementById('agent-detail-log');
+  if (!logEl || !selectedAgentId) return;
+  const inp = document.getElementById('agent-log-filter');
+  if (inp && inp.value !== agentLogFilter) inp.value = agentLogFilter;
+  syncLogFilterClearVisibility();
+  const logs = agentLogs[selectedAgentId] || [];
+  const q = agentLogFilter.trim().toLowerCase();
+  const filtered = q
+    ? logs.filter(log => {
+        const hay = `${log.timeStr || ''} ${log.oldStatus || ''} ${log.newStatus || ''} ${log.tool || ''} ${log.task || ''}`.toLowerCase();
+        return hay.includes(q);
+      })
+    : logs;
+  if (logs.length === 0) {
+    logEl.innerHTML = '<div class="detail-no-logs">No events recorded yet</div>';
+    return;
+  }
+  if (filtered.length === 0) {
+    logEl.innerHTML = `<div class="detail-no-logs">No events match "${esc(agentLogFilter)}"</div>`;
+    return;
+  }
+  logEl.innerHTML = filtered.slice(0, 30).map(log => {
+    let html = `<div class="detail-log-entry"><span class="dl-time">${log.timeStr}</span>`;
+    html += `<span class="dl-status">${log.oldStatus} > ${log.newStatus}</span>`;
+    if (log.tool) html += ` <span class="dl-tool">${log.tool}</span>`;
+    if (log.task) html += `<br><span class="dl-task">${log.task}</span>`;
+    html += '</div>';
+    return html;
+  }).join('');
+}
+
+function syncLogFilterClearVisibility() {
+  const wrap = document.querySelector('.detail-log-filter-wrap');
+  if (!wrap) return;
+  wrap.classList.toggle('has-text', agentLogFilter.length > 0);
+}
+
+document.addEventListener('input', (e) => {
+  if (e.target && e.target.id === 'agent-log-filter') {
+    agentLogFilter = e.target.value;
+    syncLogFilterClearVisibility();
+    renderAgentDetailLog();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'agent-log-filter-clear') {
+    const inp = document.getElementById('agent-log-filter');
+    if (inp) {
+      inp.value = '';
+      inp.focus();
+    }
+    agentLogFilter = '';
+    syncLogFilterClearVisibility();
+    renderAgentDetailLog();
+  }
+});
 
 // Phase 3: Sparkline drawing
 function drawSparkline(canvas, agentId, windowMs) {
@@ -2834,7 +2860,23 @@ function notifyAgentEvent(agentId, agentName, oldStatus, newStatus) {
   }
 }
 
-function notifyAttentionRequired(agentId, agentName, message) {
+function notifyAttentionRequired(agentId, agentName, message, kind) {
+  // 'attention' = mid-task ask (red dot, beep, 12s grace).
+  // 'finished'  = Stop-hook fired; audio + desktop notify only when
+  // notifyFlags.finished is on. No on-screen artifact.
+  const isFinished = kind === 'finished';
+  if (isFinished) {
+    logNotification(agentId, agentName, 'finished turn', message);
+    if (notifyFlags.finished) {
+      playNotifyBeep(520);
+      sendDesktopNotification(
+        `${agentName} finished`,
+        message || 'Claude finished and is waiting',
+        `finished-${agentId}`
+      );
+    }
+    return;
+  }
   if (!notifyFlags.attention) return;
   playNotifyBeep(880);
   setTimeout(() => playNotifyBeep(660), 180);
@@ -2843,9 +2885,7 @@ function notifyAttentionRequired(agentId, agentName, message) {
     message || 'Claude is waiting on user input',
     `attention-${agentId}`
   );
-  // Sticky grace so the red dot remains visible even if PreToolUse clears
-  // awaitingUser immediately after Notification fires.
-  attentionGrace[agentId] = { until: Date.now() + ATTENTION_GRACE_MS, message: message || '' };
+  attentionGrace[agentId] = { until: Date.now() + ATTENTION_GRACE_MS, message: message || '', kind: 'attention' };
   logNotification(agentId, agentName, 'needs attention', message);
   setTimeout(() => {
     if (attentionGrace[agentId] && attentionGrace[agentId].until <= Date.now()) {
@@ -3146,15 +3186,26 @@ function connect() {
         notifyAgentEvent(agentId, name, oldStatus, agent.status);
       }
 
-      // Attention required transition (Notification hook).
-      // Use raw flag, not the grace-extended classifier, so back-to-back
-      // Notifications inside a single grace window still trigger a fresh beep.
-      const rawWas = !!(oldState && oldState.awaitingUser);
-      const rawIs  = !!agent.awaitingUser;
-      if (!rawWas && rawIs && shouldNotifyForMessage(agent.awaitingMessage)) {
+      // Finished-turn transition (Stop hook): audio + desktop notify only,
+      // gated on notifyFlags.finished. No on-screen visual.
+      const finishedWas = !!(oldState && oldState.finishedTurn);
+      const finishedIs  = !!agent.finishedTurn;
+      if (!finishedWas && finishedIs) {
         const agentInfo = getAgentById(agentId);
         const name = agentInfo ? getDisplayName(agentInfo) : `@${agentId}`;
-        notifyAttentionRequired(agentId, name, agent.awaitingMessage);
+        notifyAttentionRequired(agentId, name, agent.awaitingMessage || '', 'finished');
+      }
+
+      // Attention required transition (Notification hook).
+      // Skip when finishedTurn is already set — that's an idle wait after a
+      // completed turn, not a mid-task ask. Use raw awaitingUser so back-to-back
+      // Notifications inside a grace window still trigger a fresh beep.
+      const rawWas = !!(oldState && oldState.awaitingUser);
+      const rawIs  = !!agent.awaitingUser;
+      if (!rawWas && rawIs && !agent.finishedTurn) {
+        const agentInfo = getAgentById(agentId);
+        const name = agentInfo ? getDisplayName(agentInfo) : `@${agentId}`;
+        notifyAttentionRequired(agentId, name, agent.awaitingMessage, 'attention');
       }
 
       agentStates[agentId] = agent;
