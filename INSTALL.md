@@ -55,7 +55,7 @@ mkdir -p "$HOME/.claude"
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 ```
 
-Merge the six hook entries below into `$SETTINGS` under the `hooks` key. **Do not overwrite** other unrelated keys the user already has. If the user already has hooks for the same events, append rather than replace, and tell the user what you appended.
+Merge the seven hook entries below into `$SETTINGS` under the `hooks` key. **Do not overwrite** other unrelated keys the user already has. If the user already has hooks for the same events, append rather than replace, and tell the user what you appended.
 
 Hooks to add (replace `{{REPO_PATH}}` with the value from step 2):
 
@@ -110,7 +110,7 @@ If they want the server to autostart on login, point them to the **Auto-start on
 
 ## What this installs
 
-- Six Claude Code hooks in `~/.claude/settings.json` (PreToolUse, PostToolUse, SubagentStart, SubagentStop, Notification, UserPromptSubmit)
+- Seven Claude Code hooks in `~/.claude/settings.json` (PreToolUse, PostToolUse, SubagentStart, SubagentStop, Notification, UserPromptSubmit, Stop)
 - A background Node server on port 3141 serving the dashboard
 - No global packages, no system files modified
 
@@ -122,4 +122,4 @@ If they want the server to autostart on login, point them to the **Auto-start on
 
 ## Uninstall
 
-Remove the six hook entries from `~/.claude/settings.json` and kill the server (`lsof -ti:3141 | xargs kill`). The repo directory can then be deleted.
+Remove the seven hook entries from `~/.claude/settings.json` and kill the server (`lsof -ti:3141 | xargs kill`). The repo directory can then be deleted.

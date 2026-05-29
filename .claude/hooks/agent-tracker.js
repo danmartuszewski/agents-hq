@@ -167,10 +167,16 @@ process.stdin.on('end', () => {
         'Content-Length': Buffer.byteLength(payload)
       }
     });
-    req.on('error', () => {});
+    let exited = false;
+    function safeExit() {
+      if (exited) return;
+      exited = true;
+      process.exit(0);
+    }
+    req.on('error', () => safeExit());
     req.write(payload);
-    req.end(() => process.exit(0));
-    setTimeout(() => process.exit(0), 3000);
+    req.end(() => safeExit());
+    setTimeout(() => safeExit(), 8000);
   }
 
   let body;

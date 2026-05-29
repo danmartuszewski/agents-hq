@@ -448,6 +448,7 @@ function updateNotifyUI() {
   if (notifyFlags.attention) labelParts.push('ATTN');
   if (notifyFlags.status) labelParts.push('STATUS');
   else if (notifyFlags.crashes) labelParts.push('CRASH');
+  if (notifyFlags.finished) labelParts.push('FIN');
   if (labelParts.length === 0) {
     btn.classList.add('notify-off');
     btn.textContent = 'NOTIFY · OFF';
@@ -1270,17 +1271,17 @@ function renderList() {
       row.id = `list-agent-${agent.agentId}`;
 
       const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
-      const taskText = state.currentTask || '\u2014';
-      const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '\u2014';
-      const displayName = getDisplayName(agent);
+      const taskText = state.currentTask ? esc(state.currentTask) : '\u2014';
+      const toolHtml = state.currentTool ? `<span class="tool-badge" title="${esc(state.currentTool)}">${esc(shortToolName(state.currentTool))}</span>` : '\u2014';
+      const displayName = esc(getDisplayName(agent));
 
       const attnBadge = attn
         ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">⚠ ATTN</span>`
         : '';
       row.innerHTML = `
         <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span>${attnBadge}</span>
-        <span class="list-col col-agent"><span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>${displayName}</span>
-        <span class="list-col col-type">${agent.agentType}</span>
+        <span class="list-col col-agent"><span class="agent-abbr" style="background:${esc(agent.color)}">${esc(agent.abbreviation)}</span>${displayName}</span>
+        <span class="list-col col-type">${esc(agent.agentType)}</span>
         <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
         <span class="list-col col-tool">${toolHtml}</span>
         <span class="list-col col-time"><span class="time-text">${timeSince}</span></span>
@@ -1301,17 +1302,17 @@ function updateList(agentId) {
   row.className = `list-row ${state.status}${attn ? ' awaiting-user' : ''}`;
 
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
-  const taskText = state.currentTask || '\u2014';
-  const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '\u2014';
-  const displayName = getDisplayName(agent);
+  const taskText = state.currentTask ? esc(state.currentTask) : '\u2014';
+  const toolHtml = state.currentTool ? `<span class="tool-badge" title="${esc(state.currentTool)}">${esc(shortToolName(state.currentTool))}</span>` : '\u2014';
+  const displayName = esc(getDisplayName(agent));
   const attnBadge = attn
     ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">\u26a0 ATTN</span>`
     : '';
 
   row.innerHTML = `
     <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span>${attnBadge}</span>
-    <span class="list-col col-agent"><span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>${displayName}</span>
-    <span class="list-col col-type">${agent.agentType}</span>
+    <span class="list-col col-agent"><span class="agent-abbr" style="background:${esc(agent.color)}">${esc(agent.abbreviation)}</span>${displayName}</span>
+    <span class="list-col col-type">${esc(agent.agentType)}</span>
     <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
     <span class="list-col col-tool">${toolHtml}</span>
     <span class="list-col col-time"><span class="time-text">${timeSince}</span></span>
@@ -1379,20 +1380,20 @@ function createCard(agent, state) {
   card.style.setProperty('--agent-color', agent.color);
 
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
-  const taskText = state.currentTask || 'No active task';
-  const toolHtml = state.currentTool ? `<span class="card-tool" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '';
+  const taskText = state.currentTask ? esc(state.currentTask) : 'No active task';
+  const toolHtml = state.currentTool ? `<span class="card-tool" title="${esc(state.currentTool)}">${esc(shortToolName(state.currentTool))}</span>` : '';
   const statusLabel = state.status.toUpperCase();
-  const displayName = getDisplayName(agent);
+  const displayName = esc(getDisplayName(agent));
   const attnBanner = attn
     ? `<div class="card-attn-banner" title="${esc(state.awaitingMessage || '')}">\u26a0 NEEDS YOUR INPUT${state.awaitingMessage ? ` \u00b7 ${esc(state.awaitingMessage)}` : ''}</div>`
     : '';
 
   card.innerHTML = `
     <div class="card-header">
-      <div class="card-orb">${agent.abbreviation}</div>
+      <div class="card-orb">${esc(agent.abbreviation)}</div>
       <div class="card-info">
         <div class="card-name">${displayName}</div>
-        <div class="card-dept">${agent.agentType}</div>
+        <div class="card-dept">${esc(agent.agentType)}</div>
       </div>
       <span class="card-status-badge">${statusLabel}</span>
     </div>
@@ -1440,7 +1441,7 @@ function buildAgentTree() {
 
     if (parentId && parentId !== agent.agentId && nodeMap[parentId]) {
       nodeMap[parentId].children.push(node);
-    } else if (!isLead && sessionId && sessionId !== agent.agentId && nodeMap[sessionId]) {
+    } else if (!isLead && sessionId && sessionId !== agent.agentId && nodeMap[sessionId] && nodeMap[sessionId].agent.project === agent.project) {
       nodeMap[sessionId].children.push(node);
     } else if (isLead) {
       roots.push(node);
@@ -1469,9 +1470,9 @@ function renderTreeNode(node, depth, container) {
   const { agent, state, children } = node;
   const hasChildren = children.length > 0;
   const isCollapsed = collapsedTreeNodes.has(agent.agentId);
-  const displayName = getDisplayName(agent);
+  const displayName = esc(getDisplayName(agent));
   const timeSince = state.lastActivity ? getTimeSince(state.lastActivity) : '\u2014';
-  const toolHtml = state.currentTool ? `<span class="tool-badge" title="${state.currentTool}">${shortToolName(state.currentTool)}</span>` : '';
+  const toolHtml = state.currentTool ? `<span class="tool-badge" title="${esc(state.currentTool)}">${esc(shortToolName(state.currentTool))}</span>` : '';
 
   const attn = isAwaitingAttention(state);
   const row = document.createElement('div');
@@ -1488,10 +1489,10 @@ function renderTreeNode(node, depth, container) {
   row.innerHTML = `
     <span class="tree-toggle">${toggleArrow}</span>
     <span class="status-dot"></span>
-    <span class="agent-abbr" style="background:${agent.color}">${agent.abbreviation}</span>
+    <span class="agent-abbr" style="background:${esc(agent.color)}">${esc(agent.abbreviation)}</span>
     <span class="tree-agent-name">${displayName}</span>
     ${childCount}
-    <span class="tree-agent-type">${agent.agentType}</span>
+    <span class="tree-agent-type">${esc(agent.agentType)}</span>
     ${attnBadge}
     ${toolHtml}
     <span class="time-text">${timeSince}</span>
@@ -2504,6 +2505,7 @@ function renderAgentDetail() {
   const tools = agentToolCounts[selectedAgentId] || {};
   const durations = agentToolDurations[selectedAgentId] || {};
   const displayName = getDisplayName(agent);
+  const displayNameEsc = esc(displayName);
 
   // Title
   document.getElementById('agent-detail-title').textContent = displayName.toUpperCase();
@@ -2511,11 +2513,11 @@ function renderAgentDetail() {
   // Header
   const isActive = state.status === 'active';
   document.getElementById('agent-detail-header').innerHTML = `
-    <div class="detail-orb ${isActive ? 'glow' : ''}" style="--c: ${agent.color}">${agent.abbreviation}</div>
+    <div class="detail-orb ${isActive ? 'glow' : ''}" style="--c: ${esc(agent.color)}">${esc(agent.abbreviation)}</div>
     <div class="detail-agent-info">
-      <div class="detail-agent-name">${displayName}</div>
-      <div class="detail-agent-dept">${agent.project}</div>
-      <div class="detail-agent-cwd">${agent.cwd || ''}</div>
+      <div class="detail-agent-name">${displayNameEsc}</div>
+      <div class="detail-agent-dept">${esc(agent.project)}</div>
+      <div class="detail-agent-cwd">${esc(agent.cwd || '')}</div>
     </div>
     <span class="detail-status-badge ${state.status}">${state.status.toUpperCase()}</span>
   `;
@@ -2562,7 +2564,7 @@ function renderAgentDetail() {
     </div>
     <div class="detail-stat" style="margin-top: 8px">
       <div class="detail-stat-label">CURRENT TASK</div>
-      <div class="detail-stat-value task">${richTask}</div>
+      <div class="detail-stat-value task">${esc(richTask)}</div>
     </div>
     <div class="detail-sparkline-wrap" style="margin-top: 8px">
       <div class="detail-stat-label">ACTIVITY (5 MIN)</div>
@@ -2588,7 +2590,7 @@ function renderAgentDetail() {
       const avgLabel = `<span class="detail-tool-avg">${avgMs !== null ? 'avg ' + avgMs + 'ms' : ''}</span>`;
       return `
         <div class="detail-tool-bar">
-          <span class="detail-tool-name" title="${name}">${shortToolName(name)}</span>
+          <span class="detail-tool-name" title="${esc(name)}">${esc(shortToolName(name))}</span>
           <div class="detail-tool-track"><div class="detail-tool-fill" style="width: ${(count / maxCount) * 100}%"></div></div>
           <span class="detail-tool-count">${count}</span>
           ${avgLabel}
@@ -2625,10 +2627,10 @@ function renderAgentDetailLog() {
     return;
   }
   logEl.innerHTML = filtered.slice(0, 30).map(log => {
-    let html = `<div class="detail-log-entry"><span class="dl-time">${log.timeStr}</span>`;
-    html += `<span class="dl-status">${log.oldStatus} > ${log.newStatus}</span>`;
-    if (log.tool) html += ` <span class="dl-tool">${log.tool}</span>`;
-    if (log.task) html += `<br><span class="dl-task">${log.task}</span>`;
+    let html = `<div class="detail-log-entry"><span class="dl-time">${esc(log.timeStr)}</span>`;
+    html += `<span class="dl-status">${esc(log.oldStatus)} > ${esc(log.newStatus)}</span>`;
+    if (log.tool) html += ` <span class="dl-tool">${esc(log.tool)}</span>`;
+    if (log.task) html += `<br><span class="dl-task">${esc(log.task)}</span>`;
     html += '</div>';
     return html;
   }).join('');
@@ -2758,7 +2760,9 @@ function parseColorToRgb(color) {
 }
 
 function getTimeSince(isoDate) {
-  const diff = Math.max(0, Date.now() - new Date(isoDate).getTime());
+  const t = new Date(isoDate).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const diff = Math.max(0, Date.now() - t);
   const sec = Math.floor(diff / 1000);
   if (sec < 60) return `${sec}s ago`;
   const min = Math.floor(sec / 60);
@@ -2771,8 +2775,8 @@ function addLogEntry(agentId, oldStatus, newStatus, tool) {
   const agent = getAgentById(agentId);
   const agentName = agent ? getDisplayName(agent) : `@${agentId}`;
 
-  let text = `<span class="time">${timeStr}</span> <span class="marker">[*]</span> <span class="agent-ref" data-agent-id="${agentId}">${agentName}</span> <span class="transition">${oldStatus.toUpperCase()} > ${newStatus.toUpperCase()}</span>`;
-  if (tool) text += ` <span class="tool-name" title="${tool}">${shortToolName(tool)}</span>`;
+  let text = `<span class="time">${timeStr}</span> <span class="marker">[*]</span> <span class="agent-ref" data-agent-id="${esc(agentId)}">${esc(agentName)}</span> <span class="transition">${esc(String(oldStatus).toUpperCase())} > ${esc(String(newStatus).toUpperCase())}</span>`;
+  if (tool) text += ` <span class="tool-name" title="${esc(tool)}">${esc(shortToolName(tool))}</span>`;
 
   const entry = document.createElement('div');
   entry.className = 'log-entry';
@@ -2793,7 +2797,7 @@ function addMessageLogEntry(msg) {
 
   const entry = document.createElement('div');
   entry.className = 'log-entry log-message';
-  entry.innerHTML = `<span class="time">${timeStr}</span> <span class="msg-marker">${icon}</span> <span class="agent-ref" data-agent-id="${msg.fromId}">${fromName}</span> <span class="msg-arrow">\u2192</span> <span class="msg-recipient">${toName}</span> <span class="msg-preview">${preview}</span>`;
+  entry.innerHTML = `<span class="time">${timeStr}</span> <span class="msg-marker">${icon}</span> <span class="agent-ref" data-agent-id="${esc(msg.fromId)}">${esc(fromName)}</span> <span class="msg-arrow">\u2192</span> <span class="msg-recipient">${esc(toName)}</span> <span class="msg-preview">${esc(preview)}</span>`;
   activityLogEl.insertBefore(entry, activityLogEl.firstChild);
   while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
 }
@@ -2998,7 +3002,7 @@ function connect() {
       agentStates = msg.states;
       // Drop grace entries for agents that no longer exist
       for (const id of Object.keys(attentionGrace)) {
-        if (!agentStates[id]) clearAttentionGrace(id);
+        if (!agentStates[id] || !agentStates[id].awaitingUser) clearAttentionGrace(id);
       }
 
       // Restore persisted per-agent event logs and tool counts
@@ -3029,7 +3033,7 @@ function connect() {
             const name = agentInfo ? getDisplayName(agentInfo) : (entry.agentId || '').substring(0, 8);
             const el = document.createElement('div');
             el.className = 'log-entry';
-            el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[T]</span> <span class="agent-ref" data-agent-id="${entry.agentId}">${name}</span> <span class="transition">${entry.toolCount} tools from transcript</span>`;
+            el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[T]</span> <span class="agent-ref" data-agent-id="${esc(entry.agentId)}">${esc(name)}</span> <span class="transition">${esc(entry.toolCount)} tools from transcript</span>`;
             activityLogEl.appendChild(el);
           } else if (entry.type === 'attention') {
             const agentInfo = getAgentById(entry.agentId);
@@ -3044,8 +3048,8 @@ function connect() {
             const name = agentInfo ? getDisplayName(agentInfo) : `@${(entry.agentId || '').substring(0, 8)}`;
             const el = document.createElement('div');
             el.className = 'log-entry';
-            let text = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[*]</span> <span class="agent-ref" data-agent-id="${entry.agentId}">${name}</span> <span class="transition">${(entry.oldStatus || '').toUpperCase()} > ${(entry.newStatus || '').toUpperCase()}</span>`;
-            if (entry.tool) text += ` <span class="tool-name" title="${entry.tool}">${shortToolName(entry.tool)}</span>`;
+            let text = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[*]</span> <span class="agent-ref" data-agent-id="${esc(entry.agentId)}">${esc(name)}</span> <span class="transition">${esc((entry.oldStatus || '').toUpperCase())} > ${esc((entry.newStatus || '').toUpperCase())}</span>`;
+            if (entry.tool) text += ` <span class="tool-name" title="${esc(entry.tool)}">${esc(shortToolName(entry.tool))}</span>`;
             el.innerHTML = text;
             activityLogEl.appendChild(el);
           }
@@ -3122,7 +3126,7 @@ function connect() {
       const timeStr = `${Math.floor((Date.now() - (window._startTime || Date.now())) / 1000)}s`;
       const entry = document.createElement('div');
       entry.className = 'log-entry';
-      entry.innerHTML = `<span class="time">${timeStr}</span> <span class="marker">[T]</span> <span class="agent-ref" data-agent-id="${agentId}">${name}</span> <span class="transition">${tools.length} tools from transcript</span>`;
+      entry.innerHTML = `<span class="time">${timeStr}</span> <span class="marker">[T]</span> <span class="agent-ref" data-agent-id="${esc(agentId)}">${esc(name)}</span> <span class="transition">${tools.length} tools from transcript</span>`;
       activityLogEl.insertBefore(entry, activityLogEl.firstChild);
       while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
 

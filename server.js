@@ -100,6 +100,21 @@ function appendActivityLog(entry) {
 }
 loadActivityLog();
 
+function rebuildRegistryFromDisk() {
+  if (!fs.existsSync(STATE_DIR)) return;
+  for (const file of fs.readdirSync(STATE_DIR)) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(STATE_DIR, file), 'utf8'));
+      const id = data.agentId || data.id;
+      const type = data.agentType;
+      if (!id || !type) continue;
+      getOrCreateAgent(id, type, data.cwd, data.sessionId);
+    } catch {}
+  }
+}
+rebuildRegistryFromDisk();
+
 // Append to per-agent event log stored in state file
 function appendAgentEventLog(filePath, entry) {
   let data = {};
@@ -181,6 +196,7 @@ app.post('/api/agent/:id/status', (req, res) => {
   }
   if (status === 'offline') {
     sessionStart = null;
+    delete agentToolTimers[id];
   }
 
   const updated = {
@@ -425,7 +441,8 @@ wss.on('connection', (ws) => {
 function broadcast(msg) {
   const data = JSON.stringify(msg);
   for (const client of wss.clients) {
-    if (client.readyState === 1) client.send(data);
+    if (client.readyState !== 1) continue;
+    try { client.send(data); } catch {}
   }
 }
 
@@ -479,6 +496,7 @@ setInterval(() => {
       state.currentTool = null;
       if (newStatus === 'offline') {
         state.sessionStart = null;
+        delete agentToolTimers[id];
         if (state.awaitingUser) {
           state.awaitingUser = false;
           delete state.awaitingMessage;
