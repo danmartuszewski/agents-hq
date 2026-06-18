@@ -5,6 +5,10 @@
 // Works for both main sessions (no agent_id) and subagents.
 // Main sessions use session_id as identity and "lead" as type.
 
+// Skip tracking entirely for internal Claude Code invocations (e.g. the
+// dashboard's own `claude -p` summarizer) so they don't appear as agents.
+if (process.env.AGENTS_HQ_NO_TRACK) process.exit(0);
+
 const http = require('http');
 const fs = require('fs');
 const readline = require('readline');
@@ -150,6 +154,8 @@ process.stdin.on('end', () => {
   const toolName = data.tool_name || '';
   const toolInput = data.tool_input || {};
   const lastMsg = (data.last_assistant_message || '').substring(0, 200);
+  // Fuller copy of the final assistant turn, used for text-to-speech playback.
+  const finishedMessage = (data.last_assistant_message || '').substring(0, 4000);
   const transcriptPath = data.agent_transcript_path || '';
   const notificationMessage = (data.message || '').substring(0, 300);
 
@@ -270,6 +276,7 @@ process.stdin.on('end', () => {
     case 'Stop':
       body = {
         hookEvent: 'Stop',
+        finishedMessage,
         cwd,
         sessionId
       };

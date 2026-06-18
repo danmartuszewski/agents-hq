@@ -4,6 +4,9 @@ const { WebSocketServer } = require('ws');
 const chokidar = require('chokidar');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+const { spawn, spawnSync } = require('child_process');
 
 const app = express();
 const server = http.createServer(app);
@@ -12,6 +15,19 @@ const wss = new WebSocketServer({ server });
 const STATE_DIR = path.join(__dirname, 'state', 'agents');
 const ACTIVITY_LOG_PATH = path.join(__dirname, 'state', 'activity-log.json');
 const MAX_ACTIVITY_LOG = 500;
+
+// Secrets the user sets from the UI (e.g. the OpenAI key). Stored server-side in
+// a gitignored local file, never sent back to the browser (only a masked hint).
+const SECRETS_PATH = path.join(__dirname, 'state', 'secrets.json');
+let runtimeSecrets = {};
+try { runtimeSecrets = JSON.parse(fs.readFileSync(SECRETS_PATH, 'utf8')) || {}; } catch { runtimeSecrets = {}; }
+function saveSecrets() {
+  try { fs.mkdirSync(path.dirname(SECRETS_PATH), { recursive: true }); } catch {}
+  try { fs.writeFileSync(SECRETS_PATH, JSON.stringify(runtimeSecrets), { mode: 0o600 }); } catch {}
+}
+// UI-set key takes precedence; the env var still works as a fallback.
+function getOpenAIKey() { return runtimeSecrets.OPENAI_API_KEY || process.env.OPENAI_API_KEY || ''; }
+function maskKey(k) { return k ? `${k.slice(0, 3)}…${k.slice(-4)}` : ''; }
 
 // Agent registry: keyed by agentId, grows as agents report in
 let agentRegistry = {};
@@ -152,7 +168,7 @@ app.get('/api/messages', (req, res) => {
 // Update agent status via HTTP
 app.post('/api/agent/:id/status', (req, res) => {
   const id = decodeURIComponent(req.params.id);
-  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, parentAgentId, hookEvent, toolDetail, toolName: postToolName, transcriptTools, awaitingUser, awaitingMessage } = req.body;
+  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, parentAgentId, hookEvent, toolDetail, toolName: postToolName, transcriptTools, awaitingUser, awaitingMessage, finishedMessage } = req.body;
   // Sanitize for filename: keep uniqueness but make filesystem-safe
   const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_');
   const filePath = path.join(STATE_DIR, `${safeFilename}.json`);
@@ -225,6 +241,8 @@ app.post('/api/agent/:id/status', (req, res) => {
   if (hookEvent === 'Stop') {
     updated.finishedTurn = true;
     updated.finishedSince = new Date().toISOString();
+    // Final assistant text for the client's text-to-speech queue.
+    if (finishedMessage) updated.finishedMessage = finishedMessage;
   } else if (
     hookEvent === 'PreToolUse' ||
     hookEvent === 'UserPromptSubmit' ||
@@ -233,7 +251,10 @@ app.post('/api/agent/:id/status', (req, res) => {
     if (updated.finishedTurn) {
       updated.finishedTurn = false;
       delete updated.finishedSince;
+      delete updated.finishedMessage;
     }
+    // The agent is active again — any still-queued summary for it is now stale.
+    dropQueuedForAgent(id);
   }
 
   // Attention required (Claude Code Notification hook) — main session only,
@@ -326,6 +347,517 @@ app.post('/api/agent/:id/status', (req, res) => {
   }
 
   res.json(updated);
+});
+
+// ============================================================
+// Text-to-speech. The server owns the queue (ordering, priority, drop-stale)
+// and renders each line to an audio file with macOS `say -o`; the browser
+// plays the file via an <audio> element + Media Session API, so the Mac's
+// hardware media keys (and Now Playing) control it and it plays in the
+// background. The server advances the queue when the client reports "done".
+// ============================================================
+const TTS_DIR = path.join(os.tmpdir(), 'agents-hq-tts');
+try {
+  fs.mkdirSync(TTS_DIR, { recursive: true });
+  for (const f of fs.readdirSync(TTS_DIR)) { try { fs.unlinkSync(path.join(TTS_DIR, f)); } catch {} }
+} catch {}
+
+const ttsQueue = [];        // [{ id, agentId, text, voice, rate, label, preview, priority, audioFile, audioUrl }]
+let ttsCurrentItem = null;  // item currently handed to the browser to play
+let ttsSpeaking = false;    // a current item is assigned (rendered + playing)
+let ttsPaused = false;      // playback paused (browser <audio> paused), queue held
+let ttsRendering = false;   // a `say -o` render is in progress
+let ttsWatchdog = null;     // stall guard if no client ever reports "done"
+let ttsSeq = 0;
+
+const TTS_WATCHDOG_MS = 180000;   // drain a stuck current item after 3 min
+
+// Cache of valid voice names so an unknown/stale voice falls back to default
+// instead of failing the utterance silently.
+let validVoiceNames = new Set();
+function parseSayVoices(out) {
+  const voices = [];
+  out.split('\n').forEach(line => {
+    // Format: "Name(may have spaces)  ll[l][_RR]  # sample sentence"
+    const m = line.match(/^(.+?)\s+([a-z]{2,3}(?:_[A-Z]{2})?)\s+#/);
+    if (m) voices.push({ name: m[1].trim(), lang: m[2] });
+  });
+  return voices;
+}
+function loadValidVoices() {
+  let child;
+  try { child = spawn('say', ['-v', '?']); } catch { return; }
+  let out = '';
+  child.stdout.on('data', d => { out += d; });
+  child.on('error', () => {});
+  child.on('close', () => { validVoiceNames = new Set(parseSayVoices(out).map(v => v.name)); });
+}
+loadValidVoices();
+
+// ---- Listenable summary: rewrite a long agent message into a short spoken
+// summary. Uses Claude Haiku 4.5 via the API when ANTHROPIC_API_KEY is set;
+// otherwise falls back to a local extractive heuristic. ----
+let anthropicClient = null;
+let anthropicTried = false;
+function getAnthropicClient() {
+  if (anthropicTried) return anthropicClient;
+  anthropicTried = true;
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  try {
+    const mod = require('@anthropic-ai/sdk');
+    const Anthropic = mod.default || mod;
+    anthropicClient = new Anthropic();   // reads ANTHROPIC_API_KEY from env
+  } catch { anthropicClient = null; }
+  return anthropicClient;
+}
+
+const TTS_SUMMARY_SYSTEM =
+  "You rewrite an AI coding agent's message into a short summary meant to be " +
+  "heard, not read. Rules: 1 to 3 sentences, under 60 words total; plain spoken " +
+  "language with no markdown, code, file paths, or symbols; lead with the outcome " +
+  "(what happened or what was found); no greetings or sign-offs. Output only the summary.";
+
+function heuristicSummary(raw) {
+  let t = String(raw || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^\s*[#>\-*+]+\s*/gm, '')
+    .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1')
+    .replace(/\/(?:[^\s/]+\/)+([^\s/]+)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const sentences = t.match(/[^.!?]+[.!?]+/g) || [t];
+  let out = '';
+  for (const s of sentences) { if ((out + s).length > 280) break; out += s; }
+  return (out || t).trim().slice(0, 300);
+}
+
+// Backend 1: Anthropic API (needs ANTHROPIC_API_KEY, billed per call).
+async function summarizeViaApi(raw) {
+  const client = getAnthropicClient();
+  if (!client) return null;
+  const envModel = process.env.TTS_SUMMARY_MODEL || '';
+  const model = /^claude-/.test(envModel) ? envModel : 'claude-haiku-4-5';
+  const msg = await client.messages.create({
+    model,
+    max_tokens: 200,
+    system: TTS_SUMMARY_SYSTEM,
+    messages: [{ role: 'user', content: String(raw).slice(0, 6000) }]
+  });
+  const text = (msg.content || [])
+    .filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
+  return text || null;
+}
+
+// Backend 2: Claude Code CLI (`claude -p`). Uses the user's subscription auth —
+// no API key, no extra payment. Slower (cold start), so it runs lazily with a
+// kill timeout. AGENTS_HQ_NO_TRACK + a temp cwd keep it out of the dashboard.
+let claudeCliAvailable = null;
+function hasClaudeCli() {
+  if (claudeCliAvailable !== null) return claudeCliAvailable;
+  try {
+    const r = spawnSync('which', ['claude'], { timeout: 3000 });
+    claudeCliAvailable = !r.error && r.status === 0;
+  } catch { claudeCliAvailable = false; }
+  return claudeCliAvailable;
+}
+
+function summarizeViaCli(raw) {
+  return new Promise((resolve) => {
+    const model = process.env.TTS_SUMMARY_MODEL || 'sonnet';
+    const prompt = `${TTS_SUMMARY_SYSTEM}\n\nMessage to summarize:\n${String(raw).slice(0, 6000)}`;
+    let child;
+    try {
+      child = spawn('claude', ['-p', prompt, '--model', model, '--output-format', 'text'], {
+        cwd: os.tmpdir(),                                  // don't load project context/hooks
+        env: { ...process.env, AGENTS_HQ_NO_TRACK: '1' },  // suppress dashboard tracking hooks
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } catch { return resolve(null); }
+    let out = '';
+    child.stdout.on('data', d => { out += d; });
+    const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 25000);
+    child.on('error', () => { clearTimeout(killer); resolve(null); });
+    child.on('close', (code) => {
+      clearTimeout(killer);
+      const text = out.trim();
+      resolve(code === 0 && text ? text : null);
+    });
+  });
+}
+
+// Pick a backend: explicit override → API (if key) → CLI (if installed) → heuristic.
+function resolveSummarizer() {
+  const explicit = (process.env.TTS_SUMMARIZER || '').toLowerCase();
+  if (explicit === 'cli' || explicit === 'api' || explicit === 'heuristic') return explicit;
+  if (process.env.ANTHROPIC_API_KEY) return 'api';
+  if (hasClaudeCli()) return 'cli';
+  return 'heuristic';
+}
+
+async function summarizeForSpeech(raw) {
+  const backend = resolveSummarizer();
+  try {
+    if (backend === 'api') { const t = await summarizeViaApi(raw); if (t) return t; }
+    else if (backend === 'cli') { const t = await summarizeViaCli(raw); if (t) return t; }
+  } catch { /* fall through to heuristic */ }
+  return heuristicSummary(raw);
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([promise, new Promise(res => setTimeout(() => res(null), ms))]);
+}
+
+// ---- Voice engines: render speech to an audio file. `say` is the free local
+// default; OpenAI (gpt-4o-mini-tts) gives much better voices when OPENAI_API_KEY
+// is set. The browser plays whatever file we produce, so engines are pluggable. ----
+const OPENAI_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'];
+const OPENAI_INSTRUCTIONS = process.env.TTS_OPENAI_INSTRUCTIONS ||
+  'Speak in a calm, clear, natural narrator voice — steady and neutral, not overly expressive.';
+
+function resolveTtsEngine() {
+  const explicit = (process.env.TTS_ENGINE || '').toLowerCase();
+  if (explicit === 'say' || explicit === 'openai') return explicit;
+  if (getOpenAIKey()) return 'openai';
+  return 'say';
+}
+
+// Content-hash cache: identical (engine, voice, rate, text) reuses the rendered
+// file — instant and, for OpenAI, free. Files live in TTS_DIR; LRU-evicted.
+let openaiCharCount = 0;             // chars synthesized via OpenAI this session
+const TTS_CACHE_MAX = 300;
+function ttsCachePath(parts, ext) {
+  const hash = crypto.createHash('sha1').update(parts.join(' ')).digest('hex');
+  return { file: path.join(TTS_DIR, `${hash}.${ext}`), url: `/api/speak/audio/${hash}.${ext}` };
+}
+function touchFile(file) { try { const now = new Date(); fs.utimesSync(file, now, now); } catch {} }
+function evictCache() {
+  try {
+    const files = fs.readdirSync(TTS_DIR).filter(f => /\.(wav|mp3)$/.test(f));
+    if (files.length <= TTS_CACHE_MAX) return;
+    files.map(f => ({ f, t: fs.statSync(path.join(TTS_DIR, f)).mtimeMs }))
+      .sort((a, b) => a.t - b.t)
+      .slice(0, files.length - TTS_CACHE_MAX)
+      .forEach(({ f }) => { try { fs.unlinkSync(path.join(TTS_DIR, f)); } catch {} });
+  } catch {}
+}
+
+function renderViaSay(item, speakText) {
+  return new Promise((resolve) => {
+    const voice = (item.voice && (validVoiceNames.size === 0 || validVoiceNames.has(item.voice))) ? item.voice : '';
+    const { file, url } = ttsCachePath(['say', voice, String(item.rate || 0), speakText], 'wav');
+    if (fs.existsSync(file)) { touchFile(file); return resolve({ file, url }); }   // cache hit
+    const args = [];
+    if (voice) args.push('-v', voice);
+    if (item.rate) args.push('-r', String(item.rate));
+    args.push('-o', file, '--data-format=LEI16@22050', '--', speakText);
+    let child;
+    try { child = spawn('say', args); } catch { return resolve(null); }
+    child.on('error', () => resolve(null));
+    child.on('exit', (code) => {
+      if (code === 0 && fs.existsSync(file)) { evictCache(); resolve({ file, url }); }
+      else resolve(null);
+    });
+  });
+}
+
+async function renderViaOpenAI(item, speakText) {
+  const key = getOpenAIKey();
+  if (!key) return null;
+  const model = process.env.TTS_OPENAI_MODEL || 'gpt-4o-mini-tts';
+  const voice = OPENAI_VOICES.includes(item.voice) ? item.voice
+    : (process.env.TTS_OPENAI_VOICE || 'nova');
+  const input = String(speakText).slice(0, 4000);
+  const { file, url } = ttsCachePath(['openai', model, voice, String(item.rate || 0), input], 'mp3');
+  if (fs.existsSync(file)) { touchFile(file); return { file, url }; }   // cache hit — no API call, no cost
+  const body = { model, input, voice, response_format: 'mp3' };
+  if (/mini-tts/.test(model)) body.instructions = OPENAI_INSTRUCTIONS;
+  else if (item.rate) body.speed = Math.max(0.25, Math.min(4, item.rate / 180));   // tts-1 speed multiplier
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    const resp = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal
+    });
+    if (!resp.ok) return null;
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (!buf.length) return null;
+    fs.writeFileSync(file, buf);
+    openaiCharCount += input.length;
+    evictCache();
+    return { file, url };
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
+async function renderAudio(item, speakText) {
+  if (resolveTtsEngine() === 'openai') {
+    const r = await renderViaOpenAI(item, speakText);
+    if (r) return r;            // fall back to local `say` if the API call fails
+  }
+  return renderViaSay(item, speakText);
+}
+
+// ---- Pause other system media (Safari, Apple Music, podcasts, anything that
+// responds to the Mac's play/pause key) while the agent speaks, via the
+// MediaRemote framework through `nowplaying-cli`. No-ops if it isn't installed
+// (brew install nowplaying-cli). Pause on first utterance, resume when idle. ----
+let nowPlayingCliAvailable = null;
+function hasNowPlayingCli() {
+  if (nowPlayingCliAvailable !== null) return nowPlayingCliAvailable;
+  try {
+    const r = spawnSync('which', ['nowplaying-cli'], { timeout: 3000 });
+    nowPlayingCliAvailable = !r.error && r.status === 0;
+  } catch { nowPlayingCliAvailable = false; }
+  return nowPlayingCliAvailable;
+}
+function nowPlayingCli(args) {
+  return new Promise((resolve) => {
+    let child;
+    try { child = spawn('nowplaying-cli', args, { timeout: 4000 }); }
+    catch { return resolve(''); }
+    let out = '';
+    child.stdout.on('data', d => { out += d; });
+    child.on('error', () => resolve(''));
+    child.on('close', () => resolve(out.trim()));
+  });
+}
+let mediaPausedByUs = false;
+async function maybePauseOtherMedia(item) {
+  if (mediaPausedByUs || !item || !item.pauseOtherMedia || !hasNowPlayingCli()) return;
+  const rate = parseFloat(await nowPlayingCli(['get', 'playbackRate']));
+  if (rate > 0) {                       // something is actually playing → pause it
+    await nowPlayingCli(['pause']);
+    mediaPausedByUs = true;
+  }
+}
+async function maybeResumeOtherMedia() {
+  if (!mediaPausedByUs) return;
+  mediaPausedByUs = false;
+  if (hasNowPlayingCli()) await nowPlayingCli(['play']);
+}
+
+function ttsSnapshot() {
+  return {
+    type: 'tts',
+    speaking: ttsSpeaking,
+    paused: ttsPaused,
+    queued: ttsQueue.length,
+    current: ttsCurrentItem
+      ? { id: ttsCurrentItem.id, agentId: ttsCurrentItem.agentId, label: ttsCurrentItem.label,
+          preview: ttsCurrentItem.preview, priority: ttsCurrentItem.priority, audioUrl: ttsCurrentItem.audioUrl }
+      : null,
+    queue: ttsQueue.map(i => ({ id: i.id, agentId: i.agentId, label: i.label, preview: i.preview, priority: i.priority }))
+  };
+}
+
+function broadcastTtsState() { broadcast(ttsSnapshot()); }
+
+// Audio files are cache entries now (LRU-evicted), so we don't delete them per item.
+function cleanupAudio() { /* no-op: handled by evictCache */ }
+
+// Summarize + render an item to audio, memoized on the item (used for pre-render).
+async function prepareItem(item) {
+  if (item._prepared) return item._prepared;
+  let speakText = item.text;
+  let preview = item.preview;
+  if (item.summarize && item.rawText) {
+    const summary = await withTimeout(summarizeForSpeech(item.rawText), 27000);
+    if (summary) { speakText = (item.lead || '') + summary; preview = summary.slice(0, 140); }
+  }
+  const rendered = await withTimeout(renderAudio(item, speakText), 30000);
+  if (!rendered) return null;
+  item._prepared = { url: rendered.url, preview };
+  return item._prepared;
+}
+
+// Get the next queued item ready in the background so playback flows without gaps.
+function prerenderNext() {
+  const next = ttsQueue[0];
+  if (next && !next._prepared) prepareItem(next).catch(() => {});
+}
+
+// Drop an agent's still-queued utterances (not the one playing) — used when the
+// agent starts a new turn, making any queued summary stale.
+function dropQueuedForAgent(agentId) {
+  if (!agentId) return;
+  const before = ttsQueue.length;
+  for (let i = ttsQueue.length - 1; i >= 0; i--) {
+    if (ttsQueue[i].agentId === agentId) ttsQueue.splice(i, 1);
+  }
+  if (ttsQueue.length !== before) broadcastTtsState();
+}
+
+// Finish the current item (client reported done, skipped, or watchdog) and move on.
+function advanceCurrent(id) {
+  if (ttsWatchdog) { clearTimeout(ttsWatchdog); ttsWatchdog = null; }
+  if (id !== undefined && ttsCurrentItem && ttsCurrentItem.id !== id) return; // stale done
+  cleanupAudio(ttsCurrentItem);
+  ttsCurrentItem = null;
+  ttsSpeaking = false;
+  broadcastTtsState();
+  playNextTts();
+}
+
+async function playNextTts() {
+  if (ttsSpeaking || ttsPaused || ttsRendering) return;
+  const item = ttsQueue.shift();
+  if (!item) { ttsCurrentItem = null; broadcastTtsState(); maybeResumeOtherMedia(); return; }
+  ttsRendering = true;
+  ttsCurrentItem = item;   // show as current immediately (no audioUrl yet → client waits)
+  broadcastTtsState();
+
+  // Summarize + render (or reuse the pre-rendered result from prerenderNext).
+  const prep = await prepareItem(item);
+  ttsRendering = false;
+
+  if (ttsCurrentItem !== item) { setImmediate(playNextTts); return; }   // superseded by stop/skip
+  if (!prep) { ttsCurrentItem = null; setImmediate(playNextTts); return; }   // prep failed
+
+  if (prep.preview) item.preview = prep.preview;
+  await maybePauseOtherMedia(item);   // pause the user's music/video before the voice starts
+  item.audioUrl = prep.url;
+  ttsSpeaking = true;
+  broadcastTtsState();   // client picks up audioUrl and plays it
+  ttsWatchdog = setTimeout(() => advanceCurrent(), TTS_WATCHDOG_MS);
+  prerenderNext();       // prepare the next line in the background
+}
+
+app.post('/api/speak', (req, res) => {
+  const { text, voice, rate, label, preview, agentId, priority, rawText, lead, summarize, pauseOtherMedia } = req.body || {};
+  const clean = (text || '').toString().slice(0, 6000);
+  if (!clean.trim()) return res.json({ ok: false, queued: ttsQueue.length });
+  const item = {
+    id: ++ttsSeq,
+    agentId: typeof agentId === 'string' ? agentId : '',
+    text: clean,
+    rawText: typeof rawText === 'string' ? rawText.slice(0, 6000) : '',
+    lead: typeof lead === 'string' ? lead.slice(0, 200) : '',
+    summarize: !!summarize,
+    pauseOtherMedia: !!pauseOtherMedia,
+    voice: typeof voice === 'string' ? voice : '',
+    rate: Number.isFinite(rate) ? rate : 0,
+    label: (label || '').toString().slice(0, 80),
+    preview: (preview || '').toString().slice(0, 140),
+    priority: !!priority
+  };
+  if (item.priority) {
+    // Jump ahead of normal items but stay FIFO behind earlier priority items.
+    let idx = 0;
+    while (idx < ttsQueue.length && ttsQueue[idx].priority) idx++;
+    ttsQueue.splice(idx, 0, item);
+  } else {
+    ttsQueue.push(item);
+  }
+  if (ttsQueue.length > 50) ttsQueue.shift();   // drop oldest if backed up
+  playNextTts();
+  broadcastTtsState();
+  res.json({ ok: true, queued: ttsQueue.length + (ttsSpeaking ? 1 : 0) });
+});
+
+// Serve a rendered audio file (basename only — no path traversal).
+app.get('/api/speak/audio/:file', (req, res) => {
+  const fp = path.join(TTS_DIR, path.basename(req.params.file));
+  if (!fp.startsWith(TTS_DIR) || !fs.existsSync(fp)) return res.status(404).end();
+  res.sendFile(fp);
+});
+
+// The browser finished playing the current item.
+app.post('/api/speak/done', (req, res) => {
+  const id = req.body && req.body.id;
+  advanceCurrent(typeof id === 'number' ? id : undefined);
+  res.json({ ok: true });
+});
+
+app.post('/api/speak/skip', (req, res) => {
+  ttsPaused = false;
+  advanceCurrent();
+  res.json({ ok: true });
+});
+
+app.post('/api/speak/stop', (req, res) => {
+  if (ttsWatchdog) { clearTimeout(ttsWatchdog); ttsWatchdog = null; }
+  ttsQueue.length = 0;
+  ttsPaused = false;
+  cleanupAudio(ttsCurrentItem);
+  ttsCurrentItem = null;
+  ttsSpeaking = false;
+  broadcastTtsState();
+  maybeResumeOtherMedia();   // bring the user's media back
+  res.json({ ok: true });
+});
+
+// Pause/resume — the browser pauses the <audio>; the server just holds the queue
+// and reflects the flag so the panel and other tabs stay in sync.
+app.post('/api/speak/pause', (req, res) => {
+  if (ttsSpeaking && !ttsPaused) {
+    ttsPaused = true;
+    if (ttsWatchdog) { clearTimeout(ttsWatchdog); ttsWatchdog = null; }
+    broadcastTtsState();
+  }
+  res.json({ ok: true, paused: ttsPaused });
+});
+
+app.post('/api/speak/resume', (req, res) => {
+  if (ttsPaused) {
+    ttsPaused = false;
+    if (ttsSpeaking) ttsWatchdog = setTimeout(() => advanceCurrent(), TTS_WATCHDOG_MS);
+    broadcastTtsState();
+    playNextTts();   // in case nothing was current
+  }
+  res.json({ ok: true, paused: ttsPaused });
+});
+
+// Remove a single still-queued item by id (does not affect what's playing).
+app.post('/api/speak/remove', (req, res) => {
+  const id = req.body && req.body.id;
+  const idx = ttsQueue.findIndex(i => i.id === id);
+  if (idx >= 0) { ttsQueue.splice(idx, 1); broadcastTtsState(); }
+  res.json({ ok: true });
+});
+
+// List voices for the active engine (OpenAI's set, or installed `say` voices).
+app.get('/api/voices', (req, res) => {
+  if (resolveTtsEngine() === 'openai') {
+    return res.json(OPENAI_VOICES.map(name => ({ name, lang: 'en' })));
+  }
+  let child;
+  try { child = spawn('say', ['-v', '?']); } catch { return res.json([]); }
+  let out = '';
+  child.stdout.on('data', d => { out += d; });
+  child.on('error', () => res.json([]));
+  child.on('close', () => res.json(parseSayVoices(out)));
+});
+
+// Masked status of UI-settable keys (never returns the full secret).
+app.get('/api/config/keys', (req, res) => {
+  const k = getOpenAIKey();
+  res.json({
+    openai: {
+      set: !!k,
+      hint: maskKey(k),
+      source: runtimeSecrets.OPENAI_API_KEY ? 'ui' : (process.env.OPENAI_API_KEY ? 'env' : null)
+    },
+    usage: { openaiChars: openaiCharCount }
+  });
+});
+
+// Set or clear the OpenAI key from the UI. Empty string clears the UI-set key.
+app.post('/api/config/keys', (req, res) => {
+  const { openai } = req.body || {};
+  if (typeof openai === 'string') {
+    const trimmed = openai.trim();
+    if (trimmed) runtimeSecrets.OPENAI_API_KEY = trimmed;
+    else delete runtimeSecrets.OPENAI_API_KEY;
+    saveSecrets();
+  }
+  const k = getOpenAIKey();
+  res.json({ ok: true, openai: { set: !!k, hint: maskKey(k) } });
 });
 
 // Remove offline agents (keeps active/idle ones)
@@ -436,6 +968,8 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'init', config: getRegistryArray(), states, activityLog }));
   // Also send message history
   ws.send(JSON.stringify({ type: 'message_history', messages: messageLog }));
+  // Current speech-queue state
+  ws.send(JSON.stringify(ttsSnapshot()));
 });
 
 function broadcast(msg) {
@@ -523,7 +1057,10 @@ setInterval(() => {
 }, 10000); // check every 10s
 
 const PORT = process.env.PORT || 3141;
-server.listen(PORT, () => {
+// Bind to loopback by default so the dashboard (and the speak endpoint) aren't
+// reachable from the LAN. Set HOST=0.0.0.0 to expose it intentionally.
+const HOST = process.env.HOST || '127.0.0.1';
+server.listen(PORT, HOST, () => {
   console.log(`Agents HQ running at http://localhost:${PORT}`);
   console.log(`Hooks should POST to http://localhost:${PORT}/api/agent/:id/status`);
 });

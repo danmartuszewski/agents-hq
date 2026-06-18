@@ -8,6 +8,7 @@
     "simulate": "node scripts/simulate.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.2",
     "chokidar": "^4.0.3",
     "express": "^4.21.2",
     "ws": "^8.18.0"

@@ -44,6 +44,7 @@ Press `?` to see all shortcuts. The main ones:
 - `/` focuses the search box, `Esc` clears it or closes panels
 - `j`/`k` or arrow keys cycle through agents, `Enter` opens the detail panel
 - `t` cycles the color theme, `r` resets the camera in HQ/Graph
+- `p` pauses/resumes the spoken voice queue, `m` mutes/unmutes the voice (do-not-disturb)
 
 ## Agent detail panel
 
@@ -55,6 +56,58 @@ Click any agent in any view to open the detail panel. It shows:
 - Full event log
 
 Everything in the panel follows the active theme.
+
+## Voice
+
+The dashboard can **speak agent responses out loud**, queued one at a time across all your concurrent agents — so you can keep working in another window and just listen as each agent finishes. Everything is configured under **NOTIFY → SPEAK (TTS)**.
+
+### Speaking responses
+
+- **Speak responses** — when an agent finishes a turn, its final message is read aloud.
+- **Speak attention asks** — permission prompts / "needs input" moments are read aloud too, and they **jump the queue** ahead of finished-turn summaries.
+- Each line is prefixed with **project then agent** ("AxRange. researcher says: …") so you instantly know who's talking when several projects run at once.
+
+### The voice queue
+
+Click the **🔊 N** indicator in the header to open a live queue panel showing what's speaking now and what's lined up, labelled by project · agent. From there you can:
+
+- **Skip** the current line, **Stop all**, or remove a single queued item (✕).
+- **Pause / Resume** the speech (button, or press **`p`**) — freezes mid-sentence and holds the queue, e.g. while you take a call.
+- **Click a queue row** to jump to that agent's detail panel.
+
+Agents currently speaking or queued are also marked in the **List** and **Cards** views (🔊 / 🔈 plus an accent bar), and the queue survives concurrent agents finishing at once (they're spoken in arrival order; an agent that starts a new turn has its stale queued summary dropped).
+
+### Summarize for listening
+
+Raw agent output is full of code blocks, paths, and markdown that sound terrible read verbatim. With **Summarize for listening** on (default), each response is rewritten into a short, outcome-first spoken summary. Three backends, picked automatically (override with `TTS_SUMMARIZER`):
+
+1. **`claude -p` (subscription)** — uses your Claude Code login, **no API key, no extra cost**. Chosen automatically when the `claude` CLI is installed and no Anthropic key is set. Pick the model with `TTS_SUMMARY_MODEL` (e.g. `sonnet`, `opus`, `haiku`).
+2. **Anthropic API** — fastest, billed per call. Used when `ANTHROPIC_API_KEY` is set. Defaults to Haiku 4.5.
+3. **Local heuristic** — no key, instant, extractive (first sentences, markdown stripped). The fallback if neither is available.
+
+The dashboard's own summarizer calls are tagged so they never show up as phantom agents.
+
+### Voices (local `say` or OpenAI)
+
+- **`say` (default)** — free, local macOS voices. No key. Pick one in the **Voice** dropdown (the dropdown lists the active engine's voices); set the rate too.
+- **OpenAI** — much better voices via `gpt-4o-mini-tts` (calm-narrator tone). Paste your key into the **OpenAI key** field in the SPEAK panel and click **Save key** — it's stored server-side (`state/secrets.json`, git-ignored, never sent back to the browser; only a masked hint is shown). Once set, the engine switches to OpenAI automatically. Configurable via `TTS_OPENAI_VOICE` / `TTS_OPENAI_MODEL`, or `OPENAI_API_KEY` as an env fallback.
+- **Distinct voice per project** — give each project its own voice from the active engine's pool, so you recognize the project by sound.
+
+If an API voice call fails, it falls back to local `say` so speech never breaks.
+
+### Hardware media keys & background playback
+
+Speech plays through a hidden `<audio>` element with a **Media Session**, so your Mac's hardware play/pause keys, the Now Playing widget, and AirPods control it, and it keeps playing while the dashboard tab is in the background. (One click on the page per load is needed to satisfy the browser's autoplay policy.)
+
+### Pause your other media while speaking
+
+With **Pause other media while speaking** on, the dashboard pauses whatever's playing on your Mac (Safari, Apple Music, podcasts — anything that responds to the play/pause key) before an agent speaks, and resumes it when the queue goes idle. This needs a small tool:
+
+```bash
+brew install nowplaying-cli
+```
+
+Without it, the toggle no-ops. (macOS has no built-in command to reach the system media controls, which is why the extra tool is required.)
 
 ## Setup
 
@@ -301,6 +354,19 @@ POST /api/agent/:id/status          # update agent status
 POST /api/cleanup/offline-agents    # remove all offline agents
 POST /api/cleanup/offline-projects  # remove projects where every agent is offline
 POST /api/reset                     # clear all state and registry
+
+# Voice (text-to-speech)
+GET  /api/voices                    # voices for the active engine (say or OpenAI)
+GET  /api/config/keys               # masked status of UI-set keys (OpenAI)
+POST /api/config/keys               # set/clear the OpenAI key (stored server-side)
+POST /api/speak                     # queue an utterance
+GET  /api/speak/audio/:file         # serve a rendered audio file
+POST /api/speak/done                # browser reports current clip finished
+POST /api/speak/skip                # skip current
+POST /api/speak/pause               # pause playback (hold queue)
+POST /api/speak/resume              # resume playback
+POST /api/speak/stop                # clear the queue and stop
+POST /api/speak/remove              # remove one queued item by id
 ```
 
 POST body for status updates:
@@ -319,7 +385,23 @@ POST body for status updates:
 
 Status values: `active`, `idle`, `offline`.
 
-WebSocket message types: `init`, `update`, `config_update`, `agent_message`, `message_history`, `subagent_tools`.
+WebSocket message types: `init`, `update`, `config_update`, `agent_message`, `message_history`, `subagent_tools`, `tts` (voice queue state).
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3141` | Server port |
+| `HOST` | `127.0.0.1` | Bind address. Loopback by default so the dashboard and voice endpoints aren't reachable from the LAN — set `0.0.0.0` to expose deliberately. |
+| `AGENTS_HQ_URL` | `http://localhost:3141` | Where hooks POST to (set if the dashboard isn't on localhost) |
+| `TTS_ENGINE` | auto | Voice engine: `say` or `openai`. Auto-picks `openai` when an OpenAI key is set, else `say`. |
+| `OPENAI_API_KEY` | — | OpenAI voice key (env fallback; the UI field is preferred and takes precedence) |
+| `TTS_OPENAI_VOICE` | `nova` | OpenAI voice (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer) |
+| `TTS_OPENAI_MODEL` | `gpt-4o-mini-tts` | OpenAI TTS model |
+| `TTS_OPENAI_INSTRUCTIONS` | calm-narrator preset | Tone instructions for `gpt-4o-mini-tts` |
+| `TTS_SUMMARIZER` | auto | Summary backend: `cli`, `api`, or `heuristic`. Auto: `api` if Anthropic key, else `cli` if `claude` installed, else `heuristic`. |
+| `TTS_SUMMARY_MODEL` | `sonnet` (cli) / `claude-haiku-4-5` (api) | Model for the summary rewrite |
+| `ANTHROPIC_API_KEY` | — | Enables the API summary backend |
 
 ## Themes
 

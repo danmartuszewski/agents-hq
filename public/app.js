@@ -306,15 +306,16 @@ document.getElementById('theme-btn').addEventListener('click', (e) => {
   e.stopPropagation();
   document.getElementById('theme-dropdown').classList.toggle('open');
   document.getElementById('cleanup-dropdown').classList.remove('open');
-  document.getElementById('notify-dropdown').classList.remove('open');
+  document.getElementById('notify-dropdown')?.classList.remove('open');
   document.getElementById('layout-dropdown').classList.remove('open');
 });
 
 document.addEventListener('click', () => {
   document.getElementById('theme-dropdown').classList.remove('open');
   document.getElementById('cleanup-dropdown').classList.remove('open');
-  document.getElementById('notify-dropdown').classList.remove('open');
+  document.getElementById('notify-dropdown')?.classList.remove('open');
   document.getElementById('layout-dropdown').classList.remove('open');
+  document.getElementById('tts-queue-panel')?.classList.remove('open');
 });
 
 document.querySelectorAll('.theme-option').forEach(opt => {
@@ -335,7 +336,7 @@ document.getElementById('cleanup-btn').addEventListener('click', (e) => {
   e.stopPropagation();
   document.getElementById('cleanup-dropdown').classList.toggle('open');
   document.getElementById('theme-dropdown').classList.remove('open');
-  document.getElementById('notify-dropdown').classList.remove('open');
+  document.getElementById('notify-dropdown')?.classList.remove('open');
   document.getElementById('layout-dropdown').classList.remove('open');
 });
 
@@ -434,7 +435,6 @@ document.getElementById('agent-search').addEventListener('input', (e) => {
 // Notify Switcher
 // ============================================================
 function updateNotifyUI() {
-  const btn = document.getElementById('notify-btn');
   document.querySelectorAll('.notify-check-option').forEach(opt => {
     const on = !!notifyFlags[opt.dataset.flag];
     const mark = opt.querySelector('.check-mark');
@@ -444,26 +444,64 @@ function updateNotifyUI() {
   document.querySelectorAll('.notify-sound-option').forEach(opt => {
     opt.classList.toggle('selected', opt.dataset.sound === (notifySound ? 'on' : 'off'));
   });
-  const labelParts = [];
-  if (notifyFlags.attention) labelParts.push('ATTN');
-  if (notifyFlags.status) labelParts.push('STATUS');
-  else if (notifyFlags.crashes) labelParts.push('CRASH');
-  if (notifyFlags.finished) labelParts.push('FIN');
-  if (labelParts.length === 0) {
-    btn.classList.add('notify-off');
-    btn.textContent = 'NOTIFY · OFF';
-  } else {
-    btn.classList.remove('notify-off');
-    btn.textContent = `NOTIFY · ${labelParts.join('+')}`;
-  }
 }
+
+// Masked OpenAI key status + session usage meter (refreshed when settings open).
+async function refreshKeyStatus() {
+  const keyStatus = document.getElementById('tts-key-status');
+  if (!keyStatus) return;
+  try {
+    const r = await fetch('/api/config/keys').then(res => res.json());
+    const o = r.openai || {};
+    keyStatus.textContent = o.set
+      ? `Key set · ${o.hint}${o.source === 'env' ? ' (from env)' : ''}`
+      : 'No key — using free local voice';
+    keyStatus.classList.toggle('set', !!o.set);
+    const usageEl = document.getElementById('tts-usage');
+    const chars = (r.usage && r.usage.openaiChars) || 0;
+    if (usageEl) usageEl.textContent = chars
+      ? `OpenAI this session: ${chars.toLocaleString()} chars (≈ $${(chars / 1e6 * 15).toFixed(3)}, approx)`
+      : '';
+  } catch {}
+}
+
+function openSettings() {
+  const m = document.getElementById('settings-modal');
+  if (!m) return;
+  ['theme-dropdown', 'cleanup-dropdown', 'layout-dropdown'].forEach(id => document.getElementById(id)?.classList.remove('open'));
+  m.classList.add('open');
+  if (typeof populateVoiceSelect === 'function') populateVoiceSelect();
+  if (typeof renderTtsProjects === 'function') renderTtsProjects();
+  refreshKeyStatus();
+}
+function closeSettings() { document.getElementById('settings-modal')?.classList.remove('open'); }
 
 document.getElementById('notify-btn').addEventListener('click', (e) => {
   e.stopPropagation();
-  document.getElementById('notify-dropdown').classList.toggle('open');
-  document.getElementById('theme-dropdown').classList.remove('open');
-  document.getElementById('cleanup-dropdown').classList.remove('open');
-  document.getElementById('layout-dropdown').classList.remove('open');
+  openSettings();
+});
+
+// Mute voice (do-not-disturb): header button + 'm' shortcut
+function updateMuteUI() {
+  const b = document.getElementById('tts-mute-btn');
+  if (!b) return;
+  b.textContent = ttsMuted ? '🔇' : '🔊';
+  b.classList.toggle('muted', ttsMuted);
+  b.title = ttsMuted ? 'Voice muted — click to unmute (m)' : 'Mute voice (m)';
+}
+function toggleMute() {
+  ttsMuted = !ttsMuted;
+  localStorage.setItem('agents-hq-tts-muted', ttsMuted ? 'on' : 'off');
+  if (ttsMuted) stopAllSpeech();      // silence anything already queued/playing
+  updateMuteUI();
+  if (typeof updateUnlockHint === 'function') updateUnlockHint();
+}
+document.getElementById('tts-mute-btn')?.addEventListener('click', (e) => { e.stopPropagation(); toggleMute(); });
+updateMuteUI();
+document.getElementById('settings-close')?.addEventListener('click', (e) => { e.stopPropagation(); closeSettings(); });
+// Click the backdrop (not the panel) to close
+document.getElementById('settings-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'settings-modal') closeSettings();
 });
 
 document.querySelectorAll('.notify-check-option').forEach(opt => {
@@ -557,9 +595,9 @@ teamStatsEl.addEventListener('click', (e) => {
 // ============================================================
 activityLogEl.addEventListener('click', (e) => {
   const ref = e.target.closest('.agent-ref');
-  if (!ref) return;
-  const agentId = ref.dataset.agentId;
-  if (agentId) openAgentDetail(agentId);
+  if (ref && ref.dataset.agentId) { openAgentDetail(ref.dataset.agentId); return; }
+  const replay = e.target.closest('[data-replay-id]');
+  if (replay) replaySpoken(replay.dataset.replayId);
 });
 
 // ============================================================
@@ -570,7 +608,7 @@ document.getElementById('layout-btn').addEventListener('click', (e) => {
   document.getElementById('layout-dropdown').classList.toggle('open');
   document.getElementById('theme-dropdown').classList.remove('open');
   document.getElementById('cleanup-dropdown').classList.remove('open');
-  document.getElementById('notify-dropdown').classList.remove('open');
+  document.getElementById('notify-dropdown')?.classList.remove('open');
 });
 
 document.querySelectorAll('.layout-option').forEach(opt => {
@@ -1253,6 +1291,7 @@ function renderList() {
     const truncated = projName.length > 30 ? projName.substring(0, 28) + '..' : projName;
     const arrow = isCollapsed ? '\u25b6' : '\u25bc';
     header.innerHTML = `<span class="collapse-arrow">${arrow}</span> ${truncated.toUpperCase()} <span class="project-agent-count">(${projectAgents.length})</span>${isCollapsed ? '' : '<br>' + renderProjectStatsHtml(projName)}`;
+    header.title = projName;
     header.style.cursor = 'pointer';
     header.addEventListener('click', () => {
       if (collapsedProjects.has(projName)) collapsedProjects.delete(projName);
@@ -1282,7 +1321,7 @@ function renderList() {
         <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span>${attnBadge}</span>
         <span class="list-col col-agent"><span class="agent-abbr" style="background:${esc(agent.color)}">${esc(agent.abbreviation)}</span>${displayName}</span>
         <span class="list-col col-type">${esc(agent.agentType)}</span>
-        <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
+        <span class="list-col col-task"><span class="task-text" title="${taskText}">${taskText}</span></span>
         <span class="list-col col-tool">${toolHtml}</span>
         <span class="list-col col-time"><span class="time-text">${timeSince}</span></span>
       `;
@@ -1290,6 +1329,7 @@ function renderList() {
       body.appendChild(row);
     }
   }
+  applyTtsAgentMarkers();
 }
 
 function updateList(agentId) {
@@ -1313,7 +1353,7 @@ function updateList(agentId) {
     <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span>${attnBadge}</span>
     <span class="list-col col-agent"><span class="agent-abbr" style="background:${esc(agent.color)}">${esc(agent.abbreviation)}</span>${displayName}</span>
     <span class="list-col col-type">${esc(agent.agentType)}</span>
-    <span class="list-col col-task"><span class="task-text">${taskText}</span></span>
+    <span class="list-col col-task"><span class="task-text" title="${taskText}">${taskText}</span></span>
     <span class="list-col col-tool">${toolHtml}</span>
     <span class="list-col col-time"><span class="time-text">${timeSince}</span></span>
   `;
@@ -1354,6 +1394,7 @@ function renderCards() {
     const truncated = projName.length > 30 ? projName.substring(0, 28) + '..' : projName;
     const arrow = isCollapsed ? '\u25b6' : '\u25bc';
     header.innerHTML = `<span class="collapse-arrow">${arrow}</span> ${truncated.toUpperCase()} <span class="project-agent-count">(${projectAgents.length})</span>${isCollapsed ? '' : '<br>' + renderProjectStatsHtml(projName)}`;
+    header.title = projName;
     header.style.cursor = 'pointer';
     header.addEventListener('click', () => {
       if (collapsedProjects.has(projName)) collapsedProjects.delete(projName);
@@ -1370,6 +1411,7 @@ function renderCards() {
       container.appendChild(card);
     }
   }
+  applyTtsAgentMarkers();
 }
 
 function createCard(agent, state) {
@@ -2542,8 +2584,15 @@ function renderAgentDetail() {
          ${state.awaitingSince ? `<div class="detail-attn-since">since ${getTimeSince(state.awaitingSince)}</div>` : ''}
        </div>`
     : '';
+  let speakSection = '';
+  if (ttsState.current && ttsState.current.agentId === selectedAgentId) {
+    speakSection = `<div class="detail-speak-banner">♪ Speaking now${ttsState.paused ? ' (paused)' : ''}</div>`;
+  } else if ((ttsState.queue || []).some(i => i.agentId === selectedAgentId)) {
+    speakSection = `<div class="detail-speak-banner queued">♪ Queued for speech</div>`;
+  }
   document.getElementById('agent-detail-status').innerHTML = `
     ${attnSection}
+    ${speakSection}
     <div class="detail-status-grid">
       <div class="detail-stat">
         <div class="detail-stat-label">LAST ACTIVE</div>
@@ -2825,18 +2874,20 @@ function sendDesktopNotification(title, body, tag) {
   }
 }
 
-// Always leave a 🔔 trail in the activity log so a sound is never "ghost"
-function logNotification(agentId, agentName, reason, detail) {
+// Always leave a 🔔 (or custom) trail in the activity log so a sound is never "ghost".
+// A replayId makes the entry clickable to re-speak it.
+function logNotification(agentId, agentName, reason, detail, marker = '🔔', replayId = null) {
   if (!activityLogEl) return;
   const el = document.createElement('div');
-  el.className = 'log-entry log-bell';
+  el.className = 'log-entry log-bell' + (replayId ? ' log-replayable' : '');
+  if (replayId) { el.dataset.replayId = replayId; el.title = 'Click to replay'; }
   const t = new Date().toLocaleTimeString();
   const detailHtml = detail ? ` <span class="transition">${esc(detail)}</span>` : '';
   const safeName = esc(agentName || (agentId ? `@${agentId}` : ''));
   const nameHtml = agentId
     ? `<span class="agent-ref" data-agent-id="${esc(agentId)}">${safeName}</span>`
     : `<span class="transition">${safeName}</span>`;
-  el.innerHTML = `<span class="time">${t}</span> <span class="marker">[🔔]</span> ${nameHtml} <span class="transition">${esc(reason)}</span>${detailHtml}`;
+  el.innerHTML = `<span class="time">${t}</span> <span class="marker">[${esc(marker)}]</span> ${nameHtml} <span class="transition">${esc(reason)}</span>${detailHtml}`;
   activityLogEl.insertBefore(el, activityLogEl.firstChild);
   while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
 }
@@ -2901,6 +2952,516 @@ function notifyAttentionRequired(agentId, agentName, message, kind) {
     }
   }, ATTENTION_GRACE_MS + 50);
 }
+
+// ============================================================
+// Voice / TTS output (Phase 1) — speak agent responses, queued
+// one at a time across concurrent agents.
+//
+// Uses the server's macOS `say` command (POST /api/speak) instead of the
+// browser SpeechSynthesis API. SpeechSynthesis only plays while the dashboard
+// tab is the focused foreground window, which is useless for ambient listening
+// while you work in your terminal. Server-side `say` plays through the system
+// regardless of focus, needs no API key, and uses the same system voices.
+// ============================================================
+let ttsFlags = (() => {
+  const def = { responses: false, attention: false, summarize: true, pauseMedia: false };
+  const stored = localStorage.getItem('agents-hq-tts-flags');
+  if (stored) { try { return { ...def, ...JSON.parse(stored) }; } catch {} }
+  return def;
+})();
+let ttsVoiceName = localStorage.getItem('agents-hq-tts-voice') || '';
+let ttsRate = parseFloat(localStorage.getItem('agents-hq-tts-rate')) || 1;
+let ttsMuted = localStorage.getItem('agents-hq-tts-muted') === 'on';   // global do-not-disturb
+let ttsVolume = (() => { const v = parseFloat(localStorage.getItem('agents-hq-tts-volume')); return isNaN(v) ? 1 : v; })();
+// Per-project settings, keyed by project name and persisted — they survive a
+// project leaving the board on inactivity and returning later.
+let mutedProjects = new Set((() => {
+  try { return JSON.parse(localStorage.getItem('agents-hq-tts-muted-projects')) || []; } catch { return []; }
+})());
+let projectVoiceMap = (() => {
+  try { return JSON.parse(localStorage.getItem('agents-hq-project-voices')) || {}; } catch { return {}; }
+})();
+let ttsAllVoices = [];   // [{name, lang}] fetched from /api/voices
+function saveTtsFlags() { localStorage.setItem('agents-hq-tts-flags', JSON.stringify(ttsFlags)); }
+function saveMutedProjects() { localStorage.setItem('agents-hq-tts-muted-projects', JSON.stringify([...mutedProjects])); }
+function saveProjectVoices() { localStorage.setItem('agents-hq-project-voices', JSON.stringify(projectVoiceMap)); }
+// A project uses its explicitly-assigned voice if set, otherwise the global voice.
+function voiceForProject(project) {
+  return (project && projectVoiceMap[project]) ? projectVoiceMap[project] : ttsVoiceName;
+}
+
+// Playback state mirrored from the server via the 'tts' WebSocket message.
+let ttsState = { speaking: false, paused: false, queued: 0, current: null, queue: [] };
+const spokenFinishKeys = new Set();   // dedup: agentId|finishedSince already spoken
+
+// `say` takes words-per-minute; map our 0.75–2× multiplier onto a sane WPM.
+const TTS_BASE_WPM = 180;
+
+// Turn an assistant message into something pleasant to listen to: drop code
+// blocks, markdown noise and long paths, collapse whitespace, cap length.
+function prepareForSpeech(text) {
+  if (!text) return '';
+  let t = String(text);
+  t = t.replace(/```[\s\S]*?```/g, ' (code block omitted) ');
+  t = t.replace(/`([^`]+)`/g, '$1');
+  t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ');           // images
+  t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');          // links -> text
+  t = t.replace(/^\s*[#>\-*+]+\s*/gm, '');                // heading/bullet markers
+  t = t.replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1');     // bold/italic
+  t = t.replace(/\/(?:[^\s/]+\/)+([^\s/]+)/g, '$1');      // long paths -> basename
+  t = t.replace(/\s+/g, ' ').trim();
+  const MAX = 4000;
+  if (t.length > MAX) {
+    let cut = t.slice(0, MAX);
+    // Prefer to end on a sentence boundary; otherwise a word boundary. No
+    // spoken "truncated" suffix — it just ends cleanly.
+    const sentenceEnd = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+    cut = sentenceEnd > MAX * 0.5 ? cut.slice(0, sentenceEnd + 1) : cut.replace(/\s+\S*$/, '');
+    t = cut.trim();
+  }
+  return t;
+}
+
+// Recently spoken lines, so any 🔊 entry in the activity log can be replayed.
+const spokenHistory = new Map();   // replayId -> { agentId, name, text, kind }
+let spokenSeq = 0;
+
+// Hand the utterance to the server, which owns the playback queue (one `say`
+// process at a time) so concurrent agents are heard sequentially.
+// `force` (replay / preview) bypasses the mute toggles.
+function enqueueSpeech(agentId, name, text, kind, force) {
+  if (!force && ttsMuted) return;                      // global mute / do-not-disturb
+  const speech = prepareForSpeech(text);
+  if (!speech) return;
+  // Lead with the project name (with a pause) so when several projects run at
+  // once you immediately know which one is talking, then the agent name.
+  const info = getAgentById(agentId);
+  const project = info && info.project && info.project !== 'unknown' ? info.project : '';
+  if (!force && project && mutedProjects.has(project)) return;   // this project is muted
+  const spoken = (name || '').replace(/^@/, '');   // "@researcher" -> "researcher"
+  let lead = '';
+  if (project && spoken) lead = `${project}. ${spoken} says: `;
+  else if (project) lead = `${project}: `;
+  else if (spoken) lead = `${spoken} says: `;
+  const label = [project, spoken].filter(Boolean).join(' · ') || 'Agents HQ';
+  const voice = voiceForProject(project);
+  const body = {
+    text: `${lead}${speech}`,                   // verbatim fallback
+    rawText: String(text || ''),                // raw message, for the listenable summary
+    lead,
+    summarize: kind === 'response' && !!ttsFlags.summarize,
+    pauseOtherMedia: !!ttsFlags.pauseMedia,
+    voice,
+    rate: Math.round(TTS_BASE_WPM * ttsRate),
+    label,
+    preview: speech.slice(0, 140),
+    agentId: agentId || '',
+    priority: kind === 'attention'   // attention asks jump the queue
+  };
+  fetch('/api/speak', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).catch(() => {});
+  // Record for replay (skip previews) and tag the log entry with the replay id.
+  let replayId = null;
+  if (kind !== 'preview') {
+    replayId = `r${++spokenSeq}`;
+    spokenHistory.set(replayId, { agentId, name, text, kind });
+    if (spokenHistory.size > 40) spokenHistory.delete(spokenHistory.keys().next().value);
+    logNotification(agentId, name, kind === 'attention' ? 'queued (attention)' : 'queued for speech', null, '🔊', replayId);
+  }
+}
+
+function replaySpoken(replayId) {
+  const h = spokenHistory.get(replayId);
+  if (h) enqueueSpeech(h.agentId, h.name, h.text, h.kind, true);
+}
+
+function skipCurrentSpeech() { fetch('/api/speak/skip', { method: 'POST' }).catch(() => {}); }
+function stopAllSpeech() { fetch('/api/speak/stop', { method: 'POST' }).catch(() => {}); }
+function pauseSpeech() { fetch('/api/speak/pause', { method: 'POST' }).catch(() => {}); }
+function resumeSpeech() { fetch('/api/speak/resume', { method: 'POST' }).catch(() => {}); }
+function togglePauseSpeech() {
+  if (ttsState.paused) resumeSpeech();
+  else if (ttsState.speaking) pauseSpeech();
+}
+function removeFromQueue(id) {
+  fetch('/api/speak/remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id })
+  }).catch(() => {});
+}
+
+function updateTtsIndicator() {
+  const sw = document.getElementById('tts-switcher');
+  const el = document.getElementById('tts-indicator');
+  if (!sw || !el) return;
+  const pending = ttsState.queued + (ttsState.current ? 1 : 0);
+  if (pending > 0) {
+    sw.style.display = '';
+    el.classList.toggle('speaking', ttsState.speaking && !ttsState.paused);
+    el.classList.toggle('paused', ttsState.paused);
+    el.textContent = `${ttsState.paused ? '⏸' : '🔊'} ${pending}`;
+  } else {
+    sw.style.display = 'none';
+    el.classList.remove('speaking', 'paused');
+    const panel = document.getElementById('tts-queue-panel');
+    if (panel) panel.classList.remove('open');
+  }
+}
+
+// Render the visible voice queue: what's speaking now + what's lined up.
+function renderTtsQueue() {
+  const panel = document.getElementById('tts-queue-panel');
+  if (!panel) return;
+  const cur = ttsState.current;
+  const q = ttsState.queue || [];
+  let html = `<div class="tts-q-title">VOICE QUEUE${ttsState.paused ? ' <span class="tts-q-prio">— PAUSED</span>' : ''}</div>`;
+  if (cur) {
+    html += `<div class="tts-q-current${cur.agentId ? ' tts-q-link' : ''}" data-agent-id="${esc(cur.agentId || '')}">`
+          + `<span class="tts-q-dot"></span><div class="tts-q-body">`
+          + `<div class="tts-q-label">${esc(cur.label || 'speaking')}${cur.priority ? ' <span class="tts-q-prio">⚠</span>' : ''}</div>`
+          + `<div class="tts-q-preview">${esc(cur.preview || '')}</div></div></div>`;
+  }
+  if (q.length) {
+    html += '<div class="tts-q-list">' + q.map((it, i) =>
+      `<div class="tts-q-item${it.agentId ? ' tts-q-link' : ''}" data-agent-id="${esc(it.agentId || '')}"><span class="tts-q-num">${i + 1}</span>`
+      + `<div class="tts-q-body"><div class="tts-q-label">${esc(it.label || '')}${it.priority ? ' <span class="tts-q-prio">⚠</span>' : ''}</div>`
+      + `<div class="tts-q-preview">${esc(it.preview || '')}</div></div>`
+      + `<button class="tts-q-remove" data-id="${it.id}" title="Remove from queue">✕</button></div>`
+    ).join('') + '</div>';
+  }
+  if (!cur && !q.length) html += '<div class="tts-q-empty">Nothing queued</div>';
+  html += '<div class="tts-q-actions">'
+        + `<button id="tts-pause" class="tts-q-btn">${ttsState.paused ? '▶ Resume' : '⏸ Pause'}</button>`
+        + '<button id="tts-skip" class="tts-q-btn">Skip</button>'
+        + '<button id="tts-stop" class="tts-q-btn danger">Stop all</button></div>';
+  panel.innerHTML = html;
+}
+
+// Mark which agents are speaking / queued in the list & cards views so the
+// "who's talking" state is visible on the agents themselves, not just the panel.
+function applyTtsAgentMarkers() {
+  const speaking = ttsState.current && ttsState.current.agentId ? ttsState.current.agentId : null;
+  const queued = new Set((ttsState.queue || []).map(i => i.agentId).filter(Boolean));
+  document.querySelectorAll('.tts-speaking, .tts-queued')
+    .forEach(el => el.classList.remove('tts-speaking', 'tts-queued'));
+  const mark = (id, cls) => ['list-agent-', 'card-agent-'].forEach(p => {
+    const el = document.getElementById(p + id);
+    if (el) el.classList.add(cls);
+  });
+  queued.forEach(id => { if (id !== speaking) mark(id, 'tts-queued'); });
+  if (speaking) mark(speaking, 'tts-speaking');
+}
+
+// Speak the agent's final turn. Deduped so a single Stop is never spoken twice
+// (state files are re-broadcast on later events that keep finishedTurn set).
+function maybeSpeakResponse(agentId, name, agent) {
+  if (!ttsFlags.responses || !agent.finishedMessage) return;
+  const key = `${agentId}|${agent.finishedSince || ''}`;
+  if (spokenFinishKeys.has(key)) return;
+  spokenFinishKeys.add(key);
+  if (spokenFinishKeys.size > 500) spokenFinishKeys.clear();
+  enqueueSpeech(agentId, name, agent.finishedMessage, 'response');
+}
+
+// ---- Voice / TTS dropdown wiring ----
+function updateTtsUI() {
+  document.querySelectorAll('.tts-check-option').forEach(opt => {
+    const on = !!ttsFlags[opt.dataset.tts];
+    const mark = opt.querySelector('.check-mark');
+    if (mark) mark.textContent = on ? '☑' : '☐';
+    opt.classList.toggle('selected', on);
+  });
+  const rateSel = document.getElementById('tts-rate');
+  if (rateSel) rateSel.value = String(ttsRate);
+}
+
+async function populateVoiceSelect() {
+  const sel = document.getElementById('tts-voice');
+  let voices = [];
+  try { voices = await fetch('/api/voices').then(r => r.json()); } catch {}
+  ttsAllVoices = Array.isArray(voices) ? voices : [];
+  if (sel) {
+    if (!ttsAllVoices.length) {
+      sel.innerHTML = '<option value="">(system default)</option>';
+    } else {
+      sel.innerHTML = '<option value="">(system default)</option>' +
+        ttsAllVoices.map(v => `<option value="${esc(v.name)}">${esc(v.name)} (${esc(v.lang)})</option>`).join('');
+      sel.value = ttsVoiceName;
+    }
+  }
+  renderTtsProjects();   // per-project voice dropdowns depend on the loaded voice list
+}
+
+// Per-project rows: mute toggle + an explicit voice dropdown each.
+function renderTtsProjects() {
+  const box = document.getElementById('tts-projects');
+  if (!box) return;
+  const projects = [...new Set(agentRegistry.map(a => a.project).filter(p => p && p !== 'unknown'))].sort();
+  if (!projects.length) { box.innerHTML = '<div class="settings-empty">No active projects.</div>'; return; }
+  const voiceOptions = (selected) => '<option value="">default voice</option>' +
+    ttsAllVoices.map(v => `<option value="${esc(v.name)}"${v.name === selected ? ' selected' : ''}>${esc(v.name)}</option>`).join('');
+  box.innerHTML = projects.map(p => {
+    const muted = mutedProjects.has(p);
+    const pv = projectVoiceMap[p] || '';
+    return `<div class="proj-row">`
+      + `<span class="proj-mute check-mark" data-mute="${esc(p)}" title="${muted ? 'Muted — click to speak' : 'Speaking — click to mute'}">${muted ? '☐' : '☑'}</span>`
+      + `<span class="proj-name" title="${esc(p)}">${esc(p)}</span>`
+      + `<select class="proj-voice" data-voice="${esc(p)}">${voiceOptions(pv)}</select>`
+      + `</div>`;
+  }).join('');
+}
+
+(function initTtsControls() {
+  populateVoiceSelect();
+
+  document.querySelectorAll('.tts-check-option').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const flag = opt.dataset.tts;
+      ttsFlags[flag] = !ttsFlags[flag];
+      saveTtsFlags();
+      updateTtsUI();
+      updateUnlockHint();
+    });
+  });
+
+  const voiceSel = document.getElementById('tts-voice');
+  if (voiceSel) {
+    voiceSel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      ttsVoiceName = voiceSel.value;
+      localStorage.setItem('agents-hq-tts-voice', ttsVoiceName);
+      enqueueSpeech('', 'Agents HQ', 'This is the selected voice.', 'preview', true);   // preview
+    });
+    voiceSel.addEventListener('click', (e) => e.stopPropagation());
+  }
+
+  const rateSel = document.getElementById('tts-rate');
+  if (rateSel) {
+    rateSel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      ttsRate = parseFloat(rateSel.value) || 1;
+      localStorage.setItem('agents-hq-tts-rate', String(ttsRate));
+    });
+    rateSel.addEventListener('click', (e) => e.stopPropagation());
+  }
+
+  const volSlider = document.getElementById('tts-volume');
+  if (volSlider) {
+    volSlider.value = String(ttsVolume);
+    volSlider.addEventListener('input', (e) => {
+      e.stopPropagation();
+      ttsVolume = parseFloat(volSlider.value);
+      localStorage.setItem('agents-hq-tts-volume', String(ttsVolume));
+      const a = document.getElementById('tts-audio'); if (a) a.volume = ttsVolume;
+    });
+    volSlider.addEventListener('click', (e) => e.stopPropagation());
+  }
+
+  const projectsBox = document.getElementById('tts-projects');
+  if (projectsBox) {
+    // Toggle mute for a project
+    projectsBox.addEventListener('click', (e) => {
+      const m = e.target.closest('[data-mute]');
+      if (!m) return;
+      e.stopPropagation();
+      const p = m.getAttribute('data-mute');
+      if (mutedProjects.has(p)) mutedProjects.delete(p); else mutedProjects.add(p);
+      saveMutedProjects();
+      renderTtsProjects();
+    });
+    // Assign an explicit voice to a project
+    projectsBox.addEventListener('change', (e) => {
+      const s = e.target.closest('[data-voice]');
+      if (!s) return;
+      const p = s.getAttribute('data-voice');
+      if (s.value) projectVoiceMap[p] = s.value; else delete projectVoiceMap[p];
+      saveProjectVoices();
+    });
+  }
+
+  const testBtn = document.getElementById('tts-test');
+  if (testBtn) testBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    enqueueSpeech('', 'Agents HQ', 'Voice output is working. This is a test of the text to speech queue.', 'response');
+  });
+
+  // OpenAI key management — stored server-side, never echoed back here.
+  const keyInput = document.getElementById('tts-openai-key');
+  const keyStatus = document.getElementById('tts-key-status');
+  const keySave = document.getElementById('tts-key-save');
+  if (keyInput) keyInput.addEventListener('click', (e) => e.stopPropagation());
+  if (keySave) keySave.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const val = keyInput ? keyInput.value : '';
+    try {
+      await fetch('/api/config/keys', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ openai: val })
+      });
+    } catch {}
+    if (keyInput) keyInput.value = '';          // never keep the secret in the field
+    if (keyStatus) { keyStatus.textContent = 'Saved ✓'; keyStatus.classList.add('saved'); }
+    populateVoiceSelect();                       // engine may have switched to OpenAI → refresh voices
+    setTimeout(() => { if (keyStatus) keyStatus.classList.remove('saved'); refreshKeyStatus(); }, 1300);
+  });
+  refreshKeyStatus();
+
+  const indicator = document.getElementById('tts-indicator');
+  const panel = document.getElementById('tts-queue-panel');
+  if (indicator && panel) {
+    indicator.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const opening = !panel.classList.contains('open');
+      ['notify-dropdown', 'cleanup-dropdown', 'layout-dropdown', 'theme-dropdown']
+        .forEach(id => document.getElementById(id)?.classList.remove('open'));
+      panel.classList.toggle('open', opening);
+      if (opening) renderTtsQueue();
+    });
+    // Delegated controls (panel re-renders on every queue update).
+    panel.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const t = e.target;
+      if (t.id === 'tts-pause') { togglePauseSpeech(); return; }
+      if (t.id === 'tts-skip') { skipCurrentSpeech(); return; }
+      if (t.id === 'tts-stop') { stopAllSpeech(); return; }
+      if (t.classList.contains('tts-q-remove')) { removeFromQueue(Number(t.dataset.id)); return; }
+      // Click a queue row to jump to that agent.
+      const row = t.closest('.tts-q-link');
+      if (row && row.dataset.agentId && typeof openAgentDetail === 'function') {
+        openAgentDetail(row.dataset.agentId);
+        panel.classList.remove('open');
+      }
+    });
+  }
+  renderTtsProjects();
+  updateTtsUI();
+})();
+
+// ============================================================
+// Browser audio playback + Media Session (hardware media keys)
+// The server renders each line to an audio file; this tab plays it through a
+// hidden <audio> element and exposes a Media Session so macOS hardware keys /
+// Now Playing control it. Only one tab plays (leader election) to avoid echo.
+// ============================================================
+const TTS_TAB_ID = Math.random().toString(36).slice(2) + '.' + Math.floor(performance.now());
+const ttsPeers = new Map();   // tabId -> lastHeartbeat
+let ttsBus = null;
+let audioUnlocked = false;
+let ttsLoadedId = null;       // id whose audio is loaded in the element
+let ttsLastDoneId = null;     // id we last reported finished (awaiting server advance)
+
+// First-run hint: browsers block autoplay until the user interacts, so show a
+// nudge when speech is enabled but audio hasn't been unlocked yet.
+function updateUnlockHint() {
+  const el = document.getElementById('tts-unlock-hint');
+  if (!el) return;
+  const wantSpeech = !ttsMuted && !!(ttsFlags.responses || ttsFlags.attention);
+  el.classList.toggle('show', wantSpeech && !audioUnlocked);
+}
+
+function isAudioOwner() {
+  const ids = [TTS_TAB_ID, ...ttsPeers.keys()].sort();
+  return ids[0] === TTS_TAB_ID;
+}
+
+function setMediaSessionMeta(cur) {
+  if (!('mediaSession' in navigator) || !window.MediaMetadata) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: cur.label || 'Agent response',
+      artist: 'Agents HQ',
+      album: cur.preview || ''
+    });
+  } catch {}
+}
+
+function syncAudioPlayback() {
+  const audio = document.getElementById('tts-audio');
+  if (!audio) return;
+  const cur = ttsState.current;
+
+  // Only the elected owner tab produces audio.
+  if (!isAudioOwner()) { if (!audio.paused) audio.pause(); return; }
+
+  audio.volume = ttsVolume;
+
+  if (cur && cur.audioUrl) {
+    if (cur.id !== ttsLoadedId && cur.id !== ttsLastDoneId) {
+      ttsLoadedId = cur.id;
+      audio.src = cur.audioUrl;
+      setMediaSessionMeta(cur);
+      if (audioUnlocked) audio.play().catch(() => {});
+    }
+    if ('mediaSession' in navigator) {
+      try { navigator.mediaSession.playbackState = ttsState.paused ? 'paused' : 'playing'; } catch {}
+    }
+    if (cur.id === ttsLoadedId) {
+      if (ttsState.paused) { if (!audio.paused) audio.pause(); }
+      else if (audioUnlocked && audio.paused) audio.play().catch(() => {});
+    }
+  } else if (cur) {
+    // Current item exists but its audio isn't ready yet (server is summarizing /
+    // rendering) — wait, don't tear down.
+  } else {
+    if (ttsLoadedId !== null) {
+      ttsLoadedId = null;
+      try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch {}
+    }
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.playbackState = 'none'; } catch {} }
+  }
+}
+
+(function initTtsAudio() {
+  const audio = document.getElementById('tts-audio');
+  if (!audio) return;
+
+  const reportDone = () => {
+    const id = ttsLoadedId;
+    if (id == null) return;
+    ttsLastDoneId = id;
+    fetch('/api/speak/done', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id })
+    }).catch(() => {});
+  };
+  audio.addEventListener('ended', () => { reportDone(); });
+  audio.addEventListener('error', () => { if (ttsLoadedId != null) { reportDone(); } });
+
+  // Hardware media keys / Now Playing widget / AirPods
+  if ('mediaSession' in navigator) {
+    const set = (a, h) => { try { navigator.mediaSession.setActionHandler(a, h); } catch {} };
+    set('play', () => resumeSpeech());
+    set('pause', () => pauseSpeech());
+    set('stop', () => stopAllSpeech());
+    set('nexttrack', () => skipCurrentSpeech());
+  }
+
+  // Browsers block autoplay until the user has interacted with the page.
+  const unlock = () => { if (!audioUnlocked) { audioUnlocked = true; syncAudioPlayback(); updateUnlockHint(); } };
+  ['pointerdown', 'mousedown', 'click', 'keydown', 'touchstart'].forEach(
+    ev => document.addEventListener(ev, unlock, { once: true, capture: true })
+  );
+
+  // Cross-tab leader election: only the lowest tab id plays.
+  try { ttsBus = new BroadcastChannel('agents-hq-tts'); } catch {}
+  if (ttsBus) {
+    ttsBus.onmessage = (e) => {
+      const d = e.data || {};
+      if (d.t === 'hb' && d.id) ttsPeers.set(d.id, Date.now());
+      else if (d.t === 'bye' && d.id) ttsPeers.delete(d.id);
+    };
+    window.addEventListener('beforeunload', () => { try { ttsBus.postMessage({ t: 'bye', id: TTS_TAB_ID }); } catch {} });
+    setInterval(() => {
+      try { ttsBus.postMessage({ t: 'hb', id: TTS_TAB_ID }); } catch {}
+      const now = Date.now();
+      for (const [id, t] of ttsPeers) if (now - t > 3500) ttsPeers.delete(id);
+      syncAudioPlayback();
+    }, 1500);
+  }
+})();
 
 function updateStats() {
   let active = 0, idle = 0, offline = 0, awaiting = 0;
@@ -3070,6 +3631,7 @@ function connect() {
       invalidateLayout();
       renderCurrentLayout();
       updateStats();
+      renderTtsProjects();
     }
 
     // Phase 2: Message history on connect
@@ -3132,6 +3694,22 @@ function connect() {
 
       if (selectedAgentId === agentId) renderAgentDetail();
       updateStats();
+    }
+
+    if (msg.type === 'tts') {
+      ttsState = {
+        speaking: !!msg.speaking,
+        paused: !!msg.paused,
+        queued: msg.queued || 0,
+        current: msg.current || null,
+        queue: Array.isArray(msg.queue) ? msg.queue : []
+      };
+      updateTtsIndicator();
+      renderTtsQueue();
+      applyTtsAgentMarkers();
+      syncAudioPlayback();
+      if (selectedAgentId) renderAgentDetail();   // refresh "speaking now" line
+      return;
     }
 
     if (msg.type === 'update') {
@@ -3200,6 +3778,7 @@ function connect() {
         const agentInfo = getAgentById(agentId);
         const name = agentInfo ? getDisplayName(agentInfo) : `@${agentId}`;
         notifyAttentionRequired(agentId, name, agent.awaitingMessage || '', 'finished');
+        maybeSpeakResponse(agentId, name, agent);
       }
 
       // Attention required transition (Notification hook).
@@ -3212,6 +3791,9 @@ function connect() {
         const agentInfo = getAgentById(agentId);
         const name = agentInfo ? getDisplayName(agentInfo) : `@${agentId}`;
         notifyAttentionRequired(agentId, name, agent.awaitingMessage, 'attention');
+        if (ttsFlags.attention) {
+          enqueueSpeech(agentId, name, agent.awaitingMessage || 'needs your attention', 'attention');
+        }
       }
 
       agentStates[agentId] = agent;
@@ -3272,11 +3854,12 @@ document.addEventListener('keydown', (e) => {
 
   if (e.key === 'Escape') {
     if (overlayOpen) { toggleShortcutsOverlay(); return; }
+    if (document.getElementById('settings-modal')?.classList.contains('open')) { closeSettings(); return; }
     if (isInput) { e.target.blur(); e.target.value = ''; searchFilter = ''; renderCurrentLayout(); return; }
     if (selectedAgentId) { closeAgentDetail(); return; }
     document.getElementById('theme-dropdown').classList.remove('open');
     document.getElementById('cleanup-dropdown').classList.remove('open');
-    document.getElementById('notify-dropdown').classList.remove('open');
+    document.getElementById('notify-dropdown')?.classList.remove('open');
     document.getElementById('layout-dropdown').classList.remove('open');
     return;
   }
@@ -3297,6 +3880,8 @@ document.addEventListener('keydown', (e) => {
   if (e.key === '/') { e.preventDefault(); document.getElementById('agent-search').focus(); return; }
   if (e.key === '?') { toggleShortcutsOverlay(); return; }
   if (e.key === 't') { cycleTheme(); return; }
+  if (e.key === 'p') { togglePauseSpeech(); return; }
+  if (e.key === 'm') { toggleMute(); return; }
   if (e.key === 'r') {
     if (currentLayout === 'isometric') isoResetBtn.click();
     else if (currentLayout === 'graph') graphResetBtn.click();
@@ -3331,3 +3916,4 @@ animateIso();
 animateGraph();
 animateTimeline();
 connect();
+updateUnlockHint();

@@ -13,20 +13,12 @@
     <div id="team-stats" class="team-stats">[ 0 ACTIVE | 0 IDLE | 0 OFFLINE | 0 TOTAL ]</div>
     <div id="controls">
       <input type="text" id="agent-search" placeholder="Search agents..." autocomplete="off" spellcheck="false">
-      <div id="notify-switcher">
-        <button id="notify-btn">NOTIFY</button>
-        <div id="notify-dropdown">
-          <div class="cleanup-section-title">NOTIFY ON</div>
-          <div class="cleanup-option notify-check-option" data-flag="attention"><span class="check-mark">☑</span> Attention needed</div>
-          <div class="cleanup-option notify-check-option" data-flag="finished"><span class="check-mark">☐</span> Turn finished</div>
-          <div class="cleanup-option notify-check-option" data-flag="crashes"><span class="check-mark">☑</span> Crashes</div>
-          <div class="cleanup-option notify-check-option" data-flag="status"><span class="check-mark">☐</span> All status changes</div>
-          <div class="theme-divider"></div>
-          <div class="cleanup-section-title">SOUND</div>
-          <div class="cleanup-option notify-sound-option selected" data-sound="on">On</div>
-          <div class="cleanup-option notify-sound-option" data-sound="off">Off</div>
-        </div>
+      <div id="tts-switcher" style="display:none">
+        <button id="tts-indicator" title="Voice queue — click to view"></button>
+        <div id="tts-queue-panel"></div>
       </div>
+      <button id="tts-mute-btn" title="Mute voice (m)">🔊</button>
+      <button id="notify-btn" class="settings-trigger" title="Settings">⚙ SETTINGS</button>
       <div id="cleanup-switcher">
         <button id="cleanup-btn">CLEAN</button>
         <div id="cleanup-dropdown">
@@ -177,9 +169,80 @@
           <div class="shortcut-row"><kbd>k</kbd> <kbd>&uarr;</kbd><span>Previous agent</span></div>
           <div class="shortcut-row"><kbd>Enter</kbd><span>Open agent detail</span></div>
           <div class="shortcut-row"><kbd>t</kbd><span>Cycle theme</span></div>
+          <div class="shortcut-row"><kbd>p</kbd><span>Pause / resume voice</span></div>
+          <div class="shortcut-row"><kbd>m</kbd><span>Mute / unmute voice</span></div>
           <div class="shortcut-row"><kbd>r</kbd><span>Reset view</span></div>
           <div class="shortcut-row"><kbd>?</kbd><span>This help</span></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden player for server-rendered TTS audio (drives the Media Session) -->
+  <audio id="tts-audio" preload="auto"></audio>
+
+  <!-- First-run hint: browsers block autoplay until a user interaction -->
+  <div id="tts-unlock-hint">🔊 Click anywhere to enable voice</div>
+
+  <!-- Settings modal -->
+  <div id="settings-modal" class="modal-overlay">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="modal-header">
+        <span class="modal-title">SETTINGS</span>
+        <button id="settings-close" class="modal-close" title="Close">✕</button>
+      </div>
+      <div class="modal-body">
+
+        <section class="settings-section">
+          <h3 class="settings-h">Notifications</h3>
+          <div class="cleanup-option notify-check-option" data-flag="attention"><span class="check-mark">☑</span> Attention needed</div>
+          <div class="cleanup-option notify-check-option" data-flag="finished"><span class="check-mark">☐</span> Turn finished</div>
+          <div class="cleanup-option notify-check-option" data-flag="crashes"><span class="check-mark">☑</span> Crashes</div>
+          <div class="cleanup-option notify-check-option" data-flag="status"><span class="check-mark">☐</span> All status changes</div>
+          <label class="tts-row"><span>Sound</span>
+            <span class="seg">
+              <span class="cleanup-option notify-sound-option selected" data-sound="on">On</span>
+              <span class="cleanup-option notify-sound-option" data-sound="off">Off</span>
+            </span>
+          </label>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-h">Voice output</h3>
+          <div class="cleanup-option tts-check-option" data-tts="responses"><span class="check-mark">☐</span> Speak responses</div>
+          <div class="cleanup-option tts-check-option" data-tts="attention"><span class="check-mark">☐</span> Speak attention asks</div>
+          <div class="cleanup-option tts-check-option" data-tts="summarize"><span class="check-mark">☐</span> Summarize for listening</div>
+          <div class="cleanup-option tts-check-option" data-tts="pauseMedia"><span class="check-mark">☐</span> Pause other media while speaking</div>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-h">Voice engine</h3>
+          <label class="tts-row"><span>Voice</span><select id="tts-voice"></select></label>
+          <label class="tts-row"><span>Rate</span>
+            <select id="tts-rate">
+              <option value="0.75">0.75×</option>
+              <option value="1" selected>1×</option>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+              <option value="1.75">1.75×</option>
+              <option value="2">2×</option>
+            </select>
+          </label>
+          <label class="tts-row"><span>Volume</span><input id="tts-volume" type="range" min="0" max="1" step="0.05"></label>
+          <div class="settings-btn" id="tts-test">▶ Test voice</div>
+          <label class="tts-row"><span>OpenAI key</span><input id="tts-openai-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false"></label>
+          <div class="tts-key-status" id="tts-key-status"></div>
+          <div class="settings-btn" id="tts-key-save">Save key</div>
+          <div class="settings-hint">Stored on the server, never shown again. Without a key the free local voice is used.</div>
+          <div class="settings-hint" id="tts-usage"></div>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-h">Per-project voices</h3>
+          <div class="settings-hint">Mute a project's speech, or give it its own voice. Settings persist when a project leaves and returns.</div>
+          <div id="tts-projects"></div>
+        </section>
+
       </div>
     </div>
   </div>
