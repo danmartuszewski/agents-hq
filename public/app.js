@@ -481,11 +481,21 @@ document.getElementById('notify-btn').addEventListener('click', (e) => {
   openSettings();
 });
 
+// Line-art speaker icons (shapes, currentColor) to match the terminal UI.
+const SVG_SPEAKER_ON =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M4 9H7l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/>'
+  + '<path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></svg>';
+const SVG_SPEAKER_OFF =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M4 9H7l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/>'
+  + '<path d="M16 9l5 6M21 9l-5 6"/></svg>';
+
 // Mute voice (do-not-disturb): header button + 'm' shortcut
 function updateMuteUI() {
   const b = document.getElementById('tts-mute-btn');
   if (!b) return;
-  b.textContent = ttsMuted ? '🔇' : '🔊';
+  b.innerHTML = ttsMuted ? SVG_SPEAKER_OFF : SVG_SPEAKER_ON;
   b.classList.toggle('muted', ttsMuted);
   b.title = ttsMuted ? 'Voice muted — click to unmute (m)' : 'Mute voice (m)';
 }
@@ -497,7 +507,8 @@ function toggleMute() {
   if (typeof updateUnlockHint === 'function') updateUnlockHint();
 }
 document.getElementById('tts-mute-btn')?.addEventListener('click', (e) => { e.stopPropagation(); toggleMute(); });
-updateMuteUI();
+// NB: updateMuteUI() is called from the init block at the end of the file —
+// `ttsMuted` is declared later (let), so calling it here would hit the TDZ.
 document.getElementById('settings-close')?.addEventListener('click', (e) => { e.stopPropagation(); closeSettings(); });
 // Click the backdrop (not the panel) to close
 document.getElementById('settings-modal')?.addEventListener('click', (e) => {
@@ -3916,4 +3927,5 @@ animateIso();
 animateGraph();
 animateTimeline();
 connect();
+updateMuteUI();
 updateUnlockHint();

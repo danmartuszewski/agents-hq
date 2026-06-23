@@ -146,7 +146,9 @@ function appendAgentEventLog(filePath, entry) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
 
-app.use(express.static('public'));
+// Always revalidate static assets (ETag makes this cheap) so a redeploy of
+// app.js / style.css is picked up immediately instead of a stale cached copy.
+app.use(express.static('public', { setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 app.use(express.json());
 
 // Serve agent registry

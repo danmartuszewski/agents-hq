@@ -2726,13 +2726,16 @@ body {
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--accent-dim);
-  font-size: 13px;
-  padding: 6px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
   cursor: pointer;
   border-radius: 4px;
   transition: all 0.2s;
 }
-#tts-mute-btn:hover { border-color: var(--accent-dim); }
+#tts-mute-btn svg { display: block; }
+#tts-mute-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
 #tts-mute-btn.muted {
   color: var(--status-offline-text, #ff6b6b);
   border-color: var(--status-offline-text, #ff6b6b);
