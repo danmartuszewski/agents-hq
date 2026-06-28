@@ -498,7 +498,7 @@ body {
 /* ---- Header ---- */
 #header {
   position: relative;
-  padding: 10px 24px;
+  padding: 10px 12px 10px 24px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -774,7 +774,11 @@ body {
   color: var(--accent-dim);
   width: 14px;
   text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
+.check-mark svg { display: block; }
 .cleanup-option.notify-check-option.selected,
 .cleanup-option.tts-check-option.selected,
 .cleanup-option.tts-pp-option.selected,
@@ -2736,6 +2740,25 @@ body {
 }
 #tts-mute-btn svg { display: block; }
 #tts-mute-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+
+#sidebar-toggle-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--accent-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+#sidebar-toggle-btn svg { display: block; }
+#sidebar-toggle-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+#sidebar-toggle-btn.collapsed { color: var(--accent); border-color: var(--accent-dim); }
+
+#main.sidebar-hidden #sidebar,
+#main.sidebar-hidden #sidebar-resize-handle { display: none; }
 #tts-mute-btn.muted {
   color: var(--status-offline-text, #ff6b6b);
   border-color: var(--status-offline-text, #ff6b6b);

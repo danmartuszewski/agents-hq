@@ -438,7 +438,7 @@ function updateNotifyUI() {
   document.querySelectorAll('.notify-check-option').forEach(opt => {
     const on = !!notifyFlags[opt.dataset.flag];
     const mark = opt.querySelector('.check-mark');
-    if (mark) mark.textContent = on ? '☑' : '☐';
+    if (mark) mark.innerHTML = on ? SVG_CHECK_ON : SVG_CHECK_OFF;
     opt.classList.toggle('selected', on);
   });
   document.querySelectorAll('.notify-sound-option').forEach(opt => {
@@ -490,6 +490,24 @@ const SVG_SPEAKER_OFF =
   '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
   + '<path d="M4 9H7l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/>'
   + '<path d="M16 9l5 6M21 9l-5 6"/></svg>';
+// Same header speaker drawing, sized for inline use (log marker + queue indicator).
+const SVG_SPEAKER_SM =
+  '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px" aria-hidden="true">'
+  + '<path d="M4 9H7l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/>'
+  + '<path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></svg>';
+// Matching pause glyph (two bars) for the paused queue indicator.
+const SVG_PAUSE_SM =
+  '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none" style="vertical-align:-2px" aria-hidden="true">'
+  + '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+// Shared line-art icon set — one consistent style for every icon in the UI
+// (replaces the realistic emoji: bell, warning, play, checkboxes, etc.).
+const _sa = 'viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true"';
+const _stroke = 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+const SVG_PLAY_SM = `<svg ${_sa} fill="currentColor" stroke="none"><path d="M8 6l10 6-10 6z"/></svg>`;
+const SVG_BELL_SM = `<svg ${_sa} ${_stroke}><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>`;
+const SVG_WARN_SM = `<svg ${_sa} ${_stroke}><path d="M12 3.5l9 16h-18z"/><path d="M12 10v4"/><path d="M12 17.2h.01"/></svg>`;
+const SVG_CHECK_OFF = `<svg ${_sa} ${_stroke}><rect x="4" y="4" width="16" height="16" rx="3"/></svg>`;
+const SVG_CHECK_ON = `<svg ${_sa} ${_stroke}><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12.5l2.5 2.5 5-6"/></svg>`;
 
 // Mute voice (do-not-disturb): header button + 'm' shortcut
 function updateMuteUI() {
@@ -599,6 +617,35 @@ teamStatsEl.addEventListener('click', (e) => {
     localStorage.setItem('agents-hq-sidebar-width', parseInt(sidebar.style.width));
     renderCurrentLayout();
   });
+})();
+
+// ============================================================
+// Activity log (sidebar) show/hide toggle
+// ============================================================
+function setSidebarHidden(hidden, skipRender) {
+  const btn = document.getElementById('sidebar-toggle-btn');
+  const main = document.getElementById('main');
+  if (!main) return;
+  main.classList.toggle('sidebar-hidden', hidden);
+  if (btn) {
+    btn.classList.toggle('collapsed', hidden);
+    btn.setAttribute('aria-pressed', String(hidden));
+    btn.title = (hidden ? 'Show' : 'Hide') + ' activity log (l)';
+  }
+  localStorage.setItem('agents-hq-sidebar-hidden', hidden ? 'on' : 'off');
+  if (!skipRender) renderCurrentLayout();
+}
+
+function toggleSidebar() {
+  const main = document.getElementById('main');
+  if (main) setSidebarHidden(!main.classList.contains('sidebar-hidden'));
+}
+
+(function initSidebarToggle() {
+  const btn = document.getElementById('sidebar-toggle-btn');
+  if (btn) btn.addEventListener('click', toggleSidebar);
+  // Restore saved state (layout renders later via switchLayout)
+  setSidebarHidden(localStorage.getItem('agents-hq-sidebar-hidden') === 'on', true);
 })();
 
 // ============================================================
@@ -1326,7 +1373,7 @@ function renderList() {
       const displayName = esc(getDisplayName(agent));
 
       const attnBadge = attn
-        ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">⚠ ATTN</span>`
+        ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">${SVG_WARN_SM} ATTN</span>`
         : '';
       row.innerHTML = `
         <span class="list-col col-status"><span class="status-dot"></span><span class="status-text">${state.status}</span>${attnBadge}</span>
@@ -1357,7 +1404,7 @@ function updateList(agentId) {
   const toolHtml = state.currentTool ? `<span class="tool-badge" title="${esc(state.currentTool)}">${esc(shortToolName(state.currentTool))}</span>` : '\u2014';
   const displayName = esc(getDisplayName(agent));
   const attnBadge = attn
-    ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">\u26a0 ATTN</span>`
+    ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">${SVG_WARN_SM} ATTN</span>`
     : '';
 
   row.innerHTML = `
@@ -1438,7 +1485,7 @@ function createCard(agent, state) {
   const statusLabel = state.status.toUpperCase();
   const displayName = esc(getDisplayName(agent));
   const attnBanner = attn
-    ? `<div class="card-attn-banner" title="${esc(state.awaitingMessage || '')}">\u26a0 NEEDS YOUR INPUT${state.awaitingMessage ? ` \u00b7 ${esc(state.awaitingMessage)}` : ''}</div>`
+    ? `<div class="card-attn-banner" title="${esc(state.awaitingMessage || '')}">${SVG_WARN_SM} NEEDS YOUR INPUT${state.awaitingMessage ? ` \u00b7 ${esc(state.awaitingMessage)}` : ''}</div>`
     : '';
 
   card.innerHTML = `
@@ -1536,7 +1583,7 @@ function renderTreeNode(node, depth, container) {
   const toggleArrow = hasChildren ? (isCollapsed ? '\u25b6' : '\u25bc') : '';
   const childCount = hasChildren ? `<span class="tree-children-count">(${children.length})</span>` : '';
   const attnBadge = attn
-    ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">\u26a0 ATTN</span>`
+    ? `<span class="attn-badge" title="${esc(state.awaitingMessage || 'Waiting on user input')}">${SVG_WARN_SM} ATTN</span>`
     : '';
 
   row.innerHTML = `
@@ -2590,16 +2637,16 @@ function renderAgentDetail() {
 
   const attnSection = isAwaitingAttention(state)
     ? `<div class="detail-attn-banner">
-         <div class="detail-attn-title">⚠ AWAITING USER INPUT</div>
+         <div class="detail-attn-title">${SVG_WARN_SM} AWAITING USER INPUT</div>
          <div class="detail-attn-msg">${esc(state.awaitingMessage || 'Claude is waiting on you.')}</div>
          ${state.awaitingSince ? `<div class="detail-attn-since">since ${getTimeSince(state.awaitingSince)}</div>` : ''}
        </div>`
     : '';
   let speakSection = '';
   if (ttsState.current && ttsState.current.agentId === selectedAgentId) {
-    speakSection = `<div class="detail-speak-banner">♪ Speaking now${ttsState.paused ? ' (paused)' : ''}</div>`;
+    speakSection = `<div class="detail-speak-banner">${SVG_SPEAKER_SM} Speaking now${ttsState.paused ? ' (paused)' : ''}</div>`;
   } else if ((ttsState.queue || []).some(i => i.agentId === selectedAgentId)) {
-    speakSection = `<div class="detail-speak-banner queued">♪ Queued for speech</div>`;
+    speakSection = `<div class="detail-speak-banner queued">${SVG_SPEAKER_SM} Queued for speech</div>`;
   }
   document.getElementById('agent-detail-status').innerHTML = `
     ${attnSection}
@@ -2898,7 +2945,11 @@ function logNotification(agentId, agentName, reason, detail, marker = '🔔', re
   const nameHtml = agentId
     ? `<span class="agent-ref" data-agent-id="${esc(agentId)}">${safeName}</span>`
     : `<span class="transition">${safeName}</span>`;
-  el.innerHTML = `<span class="time">${t}</span> <span class="marker">[${esc(marker)}]</span> ${nameHtml} <span class="transition">${esc(reason)}</span>${detailHtml}`;
+  const markerInner = marker === '🔊' ? SVG_SPEAKER_SM
+    : marker === '🔔' ? SVG_BELL_SM
+    : marker === '⚠' ? SVG_WARN_SM
+    : esc(marker);
+  el.innerHTML = `<span class="time">${t}</span> <span class="marker">[${markerInner}]</span> ${nameHtml} <span class="transition">${esc(reason)}</span>${detailHtml}`;
   activityLogEl.insertBefore(el, activityLogEl.firstChild);
   while (activityLogEl.children.length > 50) activityLogEl.removeChild(activityLogEl.lastChild);
 }
@@ -3114,7 +3165,7 @@ function updateTtsIndicator() {
     sw.style.display = '';
     el.classList.toggle('speaking', ttsState.speaking && !ttsState.paused);
     el.classList.toggle('paused', ttsState.paused);
-    el.textContent = `${ttsState.paused ? '⏸' : '🔊'} ${pending}`;
+    el.innerHTML = `${ttsState.paused ? SVG_PAUSE_SM : SVG_SPEAKER_SM} ${pending}`;
   } else {
     sw.style.display = 'none';
     el.classList.remove('speaking', 'paused');
@@ -3133,20 +3184,20 @@ function renderTtsQueue() {
   if (cur) {
     html += `<div class="tts-q-current${cur.agentId ? ' tts-q-link' : ''}" data-agent-id="${esc(cur.agentId || '')}">`
           + `<span class="tts-q-dot"></span><div class="tts-q-body">`
-          + `<div class="tts-q-label">${esc(cur.label || 'speaking')}${cur.priority ? ' <span class="tts-q-prio">⚠</span>' : ''}</div>`
+          + `<div class="tts-q-label">${esc(cur.label || 'speaking')}${cur.priority ? ` <span class="tts-q-prio">${SVG_WARN_SM}</span>` : ''}</div>`
           + `<div class="tts-q-preview">${esc(cur.preview || '')}</div></div></div>`;
   }
   if (q.length) {
     html += '<div class="tts-q-list">' + q.map((it, i) =>
       `<div class="tts-q-item${it.agentId ? ' tts-q-link' : ''}" data-agent-id="${esc(it.agentId || '')}"><span class="tts-q-num">${i + 1}</span>`
-      + `<div class="tts-q-body"><div class="tts-q-label">${esc(it.label || '')}${it.priority ? ' <span class="tts-q-prio">⚠</span>' : ''}</div>`
+      + `<div class="tts-q-body"><div class="tts-q-label">${esc(it.label || '')}${it.priority ? ` <span class="tts-q-prio">${SVG_WARN_SM}</span>` : ''}</div>`
       + `<div class="tts-q-preview">${esc(it.preview || '')}</div></div>`
       + `<button class="tts-q-remove" data-id="${it.id}" title="Remove from queue">✕</button></div>`
     ).join('') + '</div>';
   }
   if (!cur && !q.length) html += '<div class="tts-q-empty">Nothing queued</div>';
   html += '<div class="tts-q-actions">'
-        + `<button id="tts-pause" class="tts-q-btn">${ttsState.paused ? '▶ Resume' : '⏸ Pause'}</button>`
+        + `<button id="tts-pause" class="tts-q-btn">${ttsState.paused ? SVG_PLAY_SM + ' Resume' : SVG_PAUSE_SM + ' Pause'}</button>`
         + '<button id="tts-skip" class="tts-q-btn">Skip</button>'
         + '<button id="tts-stop" class="tts-q-btn danger">Stop all</button></div>';
   panel.innerHTML = html;
@@ -3183,7 +3234,7 @@ function updateTtsUI() {
   document.querySelectorAll('.tts-check-option').forEach(opt => {
     const on = !!ttsFlags[opt.dataset.tts];
     const mark = opt.querySelector('.check-mark');
-    if (mark) mark.textContent = on ? '☑' : '☐';
+    if (mark) mark.innerHTML = on ? SVG_CHECK_ON : SVG_CHECK_OFF;
     opt.classList.toggle('selected', on);
   });
   const rateSel = document.getElementById('tts-rate');
@@ -3219,7 +3270,7 @@ function renderTtsProjects() {
     const muted = mutedProjects.has(p);
     const pv = projectVoiceMap[p] || '';
     return `<div class="proj-row">`
-      + `<span class="proj-mute check-mark" data-mute="${esc(p)}" title="${muted ? 'Muted — click to speak' : 'Speaking — click to mute'}">${muted ? '☐' : '☑'}</span>`
+      + `<span class="proj-mute check-mark" data-mute="${esc(p)}" title="${muted ? 'Muted — click to speak' : 'Speaking — click to mute'}">${muted ? SVG_CHECK_OFF : SVG_CHECK_ON}</span>`
       + `<span class="proj-name" title="${esc(p)}">${esc(p)}</span>`
       + `<select class="proj-voice" data-voice="${esc(p)}">${voiceOptions(pv)}</select>`
       + `</div>`;
@@ -3486,7 +3537,7 @@ function updateStats() {
   }
   const total = allIds.size;
   const awaitingChip = awaiting > 0
-    ? `<span class="stat-attention" id="stat-attention-chip" title="${awaiting} agent${awaiting > 1 ? 's' : ''} waiting on user input — click to jump">⚠ ${awaiting} ATTN</span> | `
+    ? `<span class="stat-attention" id="stat-attention-chip" title="${awaiting} agent${awaiting > 1 ? 's' : ''} waiting on user input — click to jump">${SVG_WARN_SM} ${awaiting} ATTN</span> | `
     : '';
   teamStatsEl.innerHTML = `[ ${awaitingChip}<span class="stat-active">${active} ACTIVE</span> | <span class="stat-idle">${idle} IDLE</span> | ${offline} OFFLINE | ${total} TOTAL ]`;
   setAttentionIndicators(awaiting);
@@ -3529,7 +3580,7 @@ let _faviconLink = document.querySelector('link[rel="icon"]');
 
 function setAttentionIndicators(count) {
   // Tab title
-  document.title = count > 0 ? `(${count}⚠) ${BASE_TITLE}` : BASE_TITLE;
+  document.title = count > 0 ? `(${count}) ${BASE_TITLE}` : BASE_TITLE;
   // Favicon swap (skip until variants loaded)
   if (!_faviconLink || !_faviconAlert) return;
   const target = count > 0 ? _faviconAlert : (_faviconBase || 'favicon.svg');
@@ -3613,7 +3664,7 @@ function connect() {
             const el = document.createElement('div');
             el.className = 'log-entry log-attention';
             const msg = esc(entry.message || 'waiting on user');
-            el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[⚠]</span> <span class="agent-ref" data-agent-id="${esc(entry.agentId)}">${esc(name)}</span> <span class="transition">${msg}</span>`;
+            el.innerHTML = `<span class="time">${new Date(entry.time).toLocaleTimeString()}</span> <span class="marker">[${SVG_WARN_SM}]</span> <span class="agent-ref" data-agent-id="${esc(entry.agentId)}">${esc(name)}</span> <span class="transition">${msg}</span>`;
             activityLogEl.appendChild(el);
           } else {
             const agentInfo = getAgentById(entry.agentId);
@@ -3893,6 +3944,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 't') { cycleTheme(); return; }
   if (e.key === 'p') { togglePauseSpeech(); return; }
   if (e.key === 'm') { toggleMute(); return; }
+  if (e.key === 'l') { toggleSidebar(); return; }
   if (e.key === 'r') {
     if (currentLayout === 'isometric') isoResetBtn.click();
     else if (currentLayout === 'graph') graphResetBtn.click();

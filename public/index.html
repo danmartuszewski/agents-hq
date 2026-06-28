@@ -18,7 +18,7 @@
         <div id="tts-queue-panel"></div>
       </div>
       <button id="tts-mute-btn" title="Mute voice (m)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9H7l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></svg></button>
-      <button id="notify-btn" class="settings-trigger" title="Settings">⚙ SETTINGS</button>
+      <button id="notify-btn" class="settings-trigger" title="Settings"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> SETTINGS</button>
       <div id="cleanup-switcher">
         <button id="cleanup-btn">CLEAN</button>
         <div id="cleanup-dropdown">
@@ -62,6 +62,7 @@
           <div class="theme-option" data-theme="horizon"><span class="swatch" style="background:#e95378"></span> Horizon</div>
         </div>
       </div>
+      <button id="sidebar-toggle-btn" title="Hide activity log (l)"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="15" y1="4" x2="15" y2="20"/></svg></button>
     </div>
   </div>
 
@@ -171,6 +172,7 @@
           <div class="shortcut-row"><kbd>t</kbd><span>Cycle theme</span></div>
           <div class="shortcut-row"><kbd>p</kbd><span>Pause / resume voice</span></div>
           <div class="shortcut-row"><kbd>m</kbd><span>Mute / unmute voice</span></div>
+          <div class="shortcut-row"><kbd>l</kbd><span>Hide / show activity log</span></div>
           <div class="shortcut-row"><kbd>r</kbd><span>Reset view</span></div>
           <div class="shortcut-row"><kbd>?</kbd><span>This help</span></div>
         </div>
@@ -182,7 +184,7 @@
   <audio id="tts-audio" preload="auto"></audio>
 
   <!-- First-run hint: browsers block autoplay until a user interaction -->
-  <div id="tts-unlock-hint">🔊 Click anywhere to enable voice</div>
+  <div id="tts-unlock-hint"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px" aria-hidden="true"><path d="M4 9H7l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></svg> Click anywhere to enable voice</div>
 
   <!-- Settings modal -->
   <div id="settings-modal" class="modal-overlay">
@@ -195,10 +197,10 @@
 
         <section class="settings-section">
           <h3 class="settings-h">Notifications</h3>
-          <div class="cleanup-option notify-check-option" data-flag="attention"><span class="check-mark">☑</span> Attention needed</div>
-          <div class="cleanup-option notify-check-option" data-flag="finished"><span class="check-mark">☐</span> Turn finished</div>
-          <div class="cleanup-option notify-check-option" data-flag="crashes"><span class="check-mark">☑</span> Crashes</div>
-          <div class="cleanup-option notify-check-option" data-flag="status"><span class="check-mark">☐</span> All status changes</div>
+          <div class="cleanup-option notify-check-option" data-flag="attention"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12.5l2.5 2.5 5-6"/></svg></span> Attention needed</div>
+          <div class="cleanup-option notify-check-option" data-flag="finished"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> Turn finished</div>
+          <div class="cleanup-option notify-check-option" data-flag="crashes"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12.5l2.5 2.5 5-6"/></svg></span> Crashes</div>
+          <div class="cleanup-option notify-check-option" data-flag="status"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> All status changes</div>
           <label class="tts-row"><span>Sound</span>
             <span class="seg">
               <span class="cleanup-option notify-sound-option selected" data-sound="on">On</span>
@@ -209,10 +211,10 @@
 
         <section class="settings-section">
           <h3 class="settings-h">Voice output</h3>
-          <div class="cleanup-option tts-check-option" data-tts="responses"><span class="check-mark">☐</span> Speak responses</div>
-          <div class="cleanup-option tts-check-option" data-tts="attention"><span class="check-mark">☐</span> Speak attention asks</div>
-          <div class="cleanup-option tts-check-option" data-tts="summarize"><span class="check-mark">☐</span> Summarize for listening</div>
-          <div class="cleanup-option tts-check-option" data-tts="pauseMedia"><span class="check-mark">☐</span> Pause other media while speaking</div>
+          <div class="cleanup-option tts-check-option" data-tts="responses"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> Speak responses</div>
+          <div class="cleanup-option tts-check-option" data-tts="attention"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> Speak attention asks</div>
+          <div class="cleanup-option tts-check-option" data-tts="summarize"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> Summarize for listening</div>
+          <div class="cleanup-option tts-check-option" data-tts="pauseMedia"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> Pause other media while speaking</div>
         </section>
 
         <section class="settings-section">
@@ -229,7 +231,7 @@
             </select>
           </label>
           <label class="tts-row"><span>Volume</span><input id="tts-volume" type="range" min="0" max="1" step="0.05"></label>
-          <div class="settings-btn" id="tts-test">▶ Test voice</div>
+          <div class="settings-btn" id="tts-test"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none" style="vertical-align:-2px" aria-hidden="true"><path d="M8 6l10 6-10 6z"/></svg> Test voice</div>
           <label class="tts-row"><span>OpenAI key</span><input id="tts-openai-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false"></label>
           <div class="tts-key-status" id="tts-key-status"></div>
           <div class="settings-btn" id="tts-key-save">Save key</div>
