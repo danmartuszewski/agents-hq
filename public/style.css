@@ -2793,19 +2793,14 @@ body {
 .output-modal-body::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 6px; border: 3px solid transparent; background-clip: padding-box; }
 .output-modal-body::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); background-clip: padding-box; }
 
-/* Reading scale: reuse every .md-* rule under the modal at a larger size */
-.output-modal-body .detail-output {
-  max-height: none; overflow: visible; font-size: 15px; line-height: 1.7; cursor: auto;
-  /* Full-bleed grid: prose sits in a centered ~82ch column, while tables and
-     code blocks break out to the full width. */
-  display: grid;
-  grid-template-columns: 1fr min(82ch, 100%) 1fr;
-  align-content: start;
-}
-.output-modal-body .detail-output > * { grid-column: 2; min-width: 0; }
+/* Reading scale: reuse every .md-* rule under the modal at a larger size.
+   Prose is left-aligned and capped to a comfortable line length; tables and
+   code blocks break out to full width. Both share the same left edge. */
+.output-modal-body .detail-output { max-height: none; overflow: visible; font-size: 15px; line-height: 1.7; cursor: auto; }
+.output-modal-body .detail-output > * { max-width: 82ch; }
 .output-modal-body .detail-output > .md-table-wrap,
 .output-modal-body .detail-output > .md-pre,
-.output-modal-body .detail-output > .md-hr { grid-column: 1 / -1; }
+.output-modal-body .detail-output > .md-hr { max-width: none; }
 .output-modal-body .detail-output .md-p { margin: 0 0 14px; }
 .output-modal-body .detail-output .md-h { margin: 24px 0 10px; }
 .output-modal-body .detail-output h1.md-h { font-size: 22px; }
@@ -2833,7 +2828,8 @@ body {
   .output-modal { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border: none; border-radius: 0; }
   .output-modal-header { padding: 12px 16px; }
   .output-modal-body { padding: 14px 16px; }
-  .output-modal-body .detail-output { font-size: 14px; grid-template-columns: 1fr; }
+  .output-modal-body .detail-output { font-size: 14px; }
+  .output-modal-body .detail-output > * { max-width: 100%; }
 }
 
 .settings-section { padding: 14px 0; border-bottom: 1px solid var(--border-faint); }
