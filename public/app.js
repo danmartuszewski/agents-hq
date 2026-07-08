@@ -55,6 +55,107 @@ function esc(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+// ---- Safe Markdown -> HTML renderer for the FORMATTED OUTPUT panel. ----
+// Deterministic, dependency-free, no LLM. The one security invariant: every
+// character of the source is HTML-escaped BEFORE any markup is emitted, so raw
+// HTML in an agent's output (e.g. `<script>`) can never reach innerHTML as live
+// markup — it renders as visible text. Only the small, fixed set of tags this
+// function itself produces is ever inserted. Links are limited to http(s).
+function mdInline(escaped) {
+  // Operates on already-escaped text. Split into code / non-code segments on
+  // backtick spans and format only the non-code parts, so markdown markers
+  // inside a code span stay literal. No sentinel characters needed.
+  return escaped.split(/(`[^`]+`)/g).map(function (seg) {
+    if (seg.length >= 2 && seg[0] === "`" && seg[seg.length - 1] === "`") {
+      return '<code>' + seg.slice(1, -1) + '</code>';
+    }
+    var t = seg;
+    t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (_m, label, url) {
+      return /^https?:\/\//i.test(url)
+        ? '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + '</a>'
+        : label;
+    });
+    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    t = t.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    t = t.replace(/\*([^*\s][^*]*)\*/g, '<em>$1</em>');
+    t = t.replace(/(^|[^A-Za-z0-9_])_([^_]+)_(?=[^A-Za-z0-9_]|$)/g, '$1<em>$2</em>');
+    return t;
+  }).join('');
+}
+function renderMarkdown(src) {
+  const lines = String(src == null ? '' : src).replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let listType = null;   // 'ul' | 'ol' | null
+  const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
+  const isSpecial = (l) => /^\s*(```|#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s?|([-*_])\2{2,}\s*$)/.test(l);
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    const fence = line.match(/^\s*```/);
+    if (fence) {
+      closeList();
+      const body = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) { body.push(lines[i]); i++; }
+      i++;   // consume closing fence
+      out.push(`<pre class="md-pre"><code>${esc(body.join('\n'))}</code></pre>`);
+      continue;
+    }
+
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { closeList(); out.push('<hr class="md-hr">'); i++; continue; }
+
+    const h = line.match(/^\s*(#{1,6})\s+(.*)$/);
+    if (h) { closeList(); const lvl = h[1].length; out.push(`<h${lvl} class="md-h">${mdInline(esc(h[2].trim()))}</h${lvl}>`); i++; continue; }
+
+    // GFM table: header row of pipes followed by a |---|---| separator.
+    if (line.includes('|') && i + 1 < lines.length &&
+        /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes('-')) {
+      closeList();
+      const cells = (row) => row.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') { rows.push(cells(lines[i])); i++; }
+      let tbl = '<table class="md-table"><thead><tr>' +
+        head.map(c => `<th>${mdInline(esc(c))}</th>`).join('') + '</tr></thead><tbody>';
+      tbl += rows.map(r => '<tr>' + head.map((_, ci) => `<td>${mdInline(esc(r[ci] || ''))}</td>`).join('') + '</tr>').join('');
+      tbl += '</tbody></table>';
+      out.push(`<div class="md-table-wrap">${tbl}</div>`);
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      closeList();
+      const body = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { body.push(lines[i].replace(/^\s*>\s?/, '')); i++; }
+      out.push(`<blockquote class="md-quote">${mdInline(esc(body.join(' ')))}</blockquote>`);
+      continue;
+    }
+
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (ul) {
+      if (listType !== 'ul') { closeList(); out.push('<ul class="md-list">'); listType = 'ul'; }
+      out.push(`<li>${mdInline(esc(ul[1]))}</li>`); i++; continue;
+    }
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ol) {
+      if (listType !== 'ol') { closeList(); out.push('<ol class="md-list">'); listType = 'ol'; }
+      out.push(`<li>${mdInline(esc(ol[1]))}</li>`); i++; continue;
+    }
+
+    if (/^\s*$/.test(line)) { closeList(); i++; continue; }
+
+    // Paragraph: gather consecutive plain lines.
+    closeList();
+    const para = [];
+    while (i < lines.length && lines[i].trim() !== '' && !isSpecial(lines[i])) { para.push(lines[i]); i++; }
+    out.push(`<p class="md-p">${mdInline(esc(para.join(' ')))}</p>`);
+  }
+  closeList();
+  return out.join('\n');
+}
+
 function getAwaitingKind(state) {
   if (!state) return null;
   // Trust the server's classification: when an idle-wait Notification arrives
@@ -532,6 +633,13 @@ document.getElementById('settings-close')?.addEventListener('click', (e) => { e.
 document.getElementById('settings-modal')?.addEventListener('click', (e) => {
   if (e.target.id === 'settings-modal') closeSettings();
 });
+
+// ---- Output popup wiring ----
+document.getElementById('agent-output-expand')?.addEventListener('click', (e) => { e.stopPropagation(); openOutputPopup(); });
+document.getElementById('agent-detail-output')?.addEventListener('click', () => { if (outputTextFor(selectedAgentId)) openOutputPopup(); });
+document.getElementById('output-modal-close')?.addEventListener('click', (e) => { e.stopPropagation(); closeOutputPopup(); });
+document.getElementById('output-modal-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyOutputToClipboard(); });
+document.getElementById('output-modal')?.addEventListener('click', (e) => { if (e.target.id === 'output-modal') closeOutputPopup(); });
 
 document.querySelectorAll('.notify-check-option').forEach(opt => {
   opt.addEventListener('click', (e) => {
@@ -2591,6 +2699,7 @@ function openAgentDetail(agentId) {
 }
 
 function closeAgentDetail() {
+  closeOutputPopup();   // the popup must never outlive its agent context
   selectedAgentId = null;
   document.getElementById('sidebar-agent').classList.remove('active');
   document.getElementById('sidebar-global').classList.add('active');
@@ -2706,8 +2815,109 @@ function renderAgentDetail() {
     }).join('');
   }
 
+  // Formatted output (deterministic markdown render of the finished turn)
+  renderAgentDetailOutput();
+
   // Event log
   renderAgentDetailLog();
+}
+
+// The finished output for an agent: live message, else the client-side cache.
+function outputTextFor(agentId) {
+  if (!agentId) return '';
+  const state = agentStates[agentId] || {};
+  const cached = finishedOutputs[agentId];
+  return state.finishedMessage || (cached && cached.text) || '';
+}
+
+function renderAgentDetailOutput() {
+  const section = document.getElementById('agent-detail-output-section');
+  const box = document.getElementById('agent-detail-output');
+  if (!section || !box) return;
+  if (!formatFlags.show) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  const text = selectedAgentId ? outputTextFor(selectedAgentId) : '';
+  const expandBtn = document.getElementById('agent-output-expand');
+  if (expandBtn) expandBtn.style.display = text ? '' : 'none';
+  if (!text) {
+    box.innerHTML = '<div class="detail-no-logs">No finished output yet.</div>';
+    return;
+  }
+  box.innerHTML = renderMarkdown(text);
+}
+
+// ---- Output popup: a full-screen reading surface for the finished output. ----
+// Reuses the .modal-overlay component. Content is snapshotted on open so a live
+// WebSocket re-render can't reset the reader's scroll position or selection.
+let outputPopupSnapshot = '';        // raw markdown currently displayed
+let outputPopupTrigger = null;       // element to restore focus to on close
+function outputPopupOpen() {
+  return document.getElementById('output-modal')?.classList.contains('open');
+}
+function openOutputPopup() {
+  const modal = document.getElementById('output-modal');
+  if (!modal || outputPopupOpen()) return;
+  if (!selectedAgentId) return;
+  const text = outputTextFor(selectedAgentId);
+  if (!text) return;
+
+  const agent = getAgentById(selectedAgentId);
+  const state = agentStates[selectedAgentId] || {};
+  const name = agent ? getDisplayName(agent) : selectedAgentId;
+  const since = state.finishedSince || (finishedOutputs[selectedAgentId] || {}).since;
+  const parts = [];
+  if (agent && agent.project) parts.push(esc(agent.project));
+  if (state.status) parts.push(`<span class="output-modal-status ${esc(state.status)}">${esc(state.status)}</span>`);
+  if (since) { const d = new Date(since); parts.push(`finished ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`); }
+
+  document.getElementById('output-modal-title').textContent = name.toUpperCase();
+  document.getElementById('output-modal-sub').innerHTML = parts.join(' · ');
+
+  // Length guard: a pathologically large message would jank the main thread.
+  const MAX = 200000;
+  outputPopupSnapshot = text;
+  const shown = text.length > MAX ? text.slice(0, MAX) : text;
+  const truncNote = text.length > MAX ? '<div class="detail-no-logs">Output truncated for display.</div>' : '';
+  document.getElementById('output-modal-body').innerHTML =
+    `<div class="detail-output">${renderMarkdown(shown)}${truncNote}</div>`;
+
+  outputPopupTrigger = (document.activeElement && document.activeElement.isConnected) ? document.activeElement : null;
+  modal.classList.add('open');
+  document.getElementById('output-modal-body').scrollTop = 0;
+  const closeBtn = document.getElementById('output-modal-close');
+  if (closeBtn) closeBtn.focus();
+}
+function closeOutputPopup() {
+  const modal = document.getElementById('output-modal');
+  if (!modal || !modal.classList.contains('open')) return;
+  modal.classList.remove('open');
+  const t = outputPopupTrigger;
+  outputPopupTrigger = null;
+  if (t && t.isConnected) t.focus();
+  else document.getElementById('notify-btn')?.focus();
+}
+function copyOutputToClipboard() {
+  const btn = document.getElementById('output-modal-copy');
+  const done = () => { if (btn) { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1200); } };
+  // Synchronous fallback for when the async Clipboard API is unavailable or
+  // rejects (e.g. the tab isn't focused).
+  const fallback = () => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = outputPopupSnapshot;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) done();
+    } catch {}
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(outputPopupSnapshot).then(done).catch(fallback);
+  } else {
+    fallback();
+  }
 }
 
 let agentLogFilter = '';
@@ -3044,6 +3254,21 @@ let projectVoiceMap = (() => {
   try { return JSON.parse(localStorage.getItem('agents-hq-project-voices')) || {}; } catch { return {}; }
 })();
 let ttsAllVoices = [];   // [{name, lang}] fetched from /api/voices
+
+// ---- Formatted output (deterministic markdown render of the finished turn) ----
+// Off by default; toggled from Settings. Purely presentational, no LLM, no
+// server call — it renders the `finishedMessage` the server already broadcasts.
+let formatFlags = (() => {
+  const def = { show: false };
+  const stored = localStorage.getItem('agents-hq-format-flags');
+  if (stored) { try { return { ...def, ...JSON.parse(stored) }; } catch {} }
+  return def;
+})();
+function saveFormatFlags() { localStorage.setItem('agents-hq-format-flags', JSON.stringify(formatFlags)); }
+// The server clears `finishedMessage` when an agent starts its next turn, so we
+// cache the last finished output per agent to keep it readable after the fact.
+const finishedOutputs = {};   // agentId -> { text, since }
+
 function saveTtsFlags() { localStorage.setItem('agents-hq-tts-flags', JSON.stringify(ttsFlags)); }
 function saveMutedProjects() { localStorage.setItem('agents-hq-tts-muted-projects', JSON.stringify([...mutedProjects])); }
 function saveProjectVoices() { localStorage.setItem('agents-hq-project-voices', JSON.stringify(projectVoiceMap)); }
@@ -3241,6 +3466,15 @@ function updateTtsUI() {
   if (rateSel) rateSel.value = String(ttsRate);
 }
 
+function updateFormatUI() {
+  document.querySelectorAll('.format-check-option').forEach(opt => {
+    const on = !!formatFlags[opt.dataset.format];
+    const mark = opt.querySelector('.check-mark');
+    if (mark) mark.innerHTML = on ? SVG_CHECK_ON : SVG_CHECK_OFF;
+    opt.classList.toggle('selected', on);
+  });
+}
+
 async function populateVoiceSelect() {
   const sel = document.getElementById('tts-voice');
   let voices = [];
@@ -3288,6 +3522,17 @@ function renderTtsProjects() {
       saveTtsFlags();
       updateTtsUI();
       updateUnlockHint();
+    });
+  });
+
+  document.querySelectorAll('.format-check-option').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const flag = opt.dataset.format;
+      formatFlags[flag] = !formatFlags[flag];
+      saveFormatFlags();
+      updateFormatUI();
+      if (selectedAgentId) renderAgentDetailOutput();
     });
   });
 
@@ -3401,6 +3646,7 @@ function renderTtsProjects() {
   }
   renderTtsProjects();
   updateTtsUI();
+  updateFormatUI();
 })();
 
 // ============================================================
@@ -3858,6 +4104,12 @@ function connect() {
         }
       }
 
+      // Cache the finished output so the formatted panel survives the server
+      // clearing finishedMessage on the agent's next turn.
+      if (agent.finishedMessage) {
+        finishedOutputs[agentId] = { text: agent.finishedMessage, since: agent.finishedSince || Date.now() };
+      }
+
       agentStates[agentId] = agent;
       updateView(agentId);
       updateStats();
@@ -3915,6 +4167,7 @@ document.addEventListener('keydown', (e) => {
   const overlayOpen = document.getElementById('shortcuts-overlay').classList.contains('open');
 
   if (e.key === 'Escape') {
+    if (outputPopupOpen()) { closeOutputPopup(); return; }   // topmost reading surface first
     if (overlayOpen) { toggleShortcutsOverlay(); return; }
     if (document.getElementById('settings-modal')?.classList.contains('open')) { closeSettings(); return; }
     if (isInput) { e.target.blur(); e.target.value = ''; searchFilter = ''; renderCurrentLayout(); return; }
@@ -3945,6 +4198,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'p') { togglePauseSpeech(); return; }
   if (e.key === 'm') { toggleMute(); return; }
   if (e.key === 'l') { toggleSidebar(); return; }
+  if (e.key === 'o') { if (selectedAgentId && formatFlags.show) openOutputPopup(); return; }
   if (e.key === 'r') {
     if (currentLayout === 'isometric') isoResetBtn.click();
     else if (currentLayout === 'graph') graphResetBtn.click();

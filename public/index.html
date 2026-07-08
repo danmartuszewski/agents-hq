@@ -132,6 +132,13 @@
             <div class="detail-section-title">CURRENT STATUS</div>
             <div id="agent-detail-status"></div>
           </div>
+          <div class="detail-section" id="agent-detail-output-section" style="display:none">
+            <div class="detail-section-title detail-log-header">
+              <span>OUTPUT</span>
+              <button type="button" id="agent-output-expand" class="detail-output-expand" title="Expand output (o)" aria-label="Expand output" style="display:none"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+            </div>
+            <div id="agent-detail-output" class="detail-output" title="Click to expand"></div>
+          </div>
           <div class="detail-section">
             <div class="detail-section-title">TOOL USAGE</div>
             <div id="agent-detail-tools"></div>
@@ -173,6 +180,7 @@
           <div class="shortcut-row"><kbd>p</kbd><span>Pause / resume voice</span></div>
           <div class="shortcut-row"><kbd>m</kbd><span>Mute / unmute voice</span></div>
           <div class="shortcut-row"><kbd>l</kbd><span>Hide / show activity log</span></div>
+          <div class="shortcut-row"><kbd>o</kbd><span>Expand agent output</span></div>
           <div class="shortcut-row"><kbd>r</kbd><span>Reset view</span></div>
           <div class="shortcut-row"><kbd>?</kbd><span>This help</span></div>
         </div>
@@ -218,6 +226,12 @@
         </section>
 
         <section class="settings-section">
+          <h3 class="settings-h">Output</h3>
+          <div class="cleanup-option format-check-option" data-format="show"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> Show agent output in detail panel</div>
+          <div class="settings-hint">Shows each agent's finished response in its detail panel — clean and readable instead of raw console text. Local render only, no API call.</div>
+        </section>
+
+        <section class="settings-section">
           <h3 class="settings-h">Voice engine</h3>
           <label class="tts-row"><span>Voice</span><select id="tts-voice"></select></label>
           <label class="tts-row"><span>Rate</span>
@@ -246,6 +260,23 @@
         </section>
 
       </div>
+    </div>
+  </div>
+
+  <!-- Output popup: full-screen reading surface for an agent's finished output -->
+  <div id="output-modal" class="modal-overlay output-modal-overlay">
+    <div class="modal-panel output-modal" role="dialog" aria-modal="true" aria-labelledby="output-modal-title">
+      <div class="modal-header output-modal-header">
+        <div class="output-modal-titles">
+          <span class="modal-title" id="output-modal-title">OUTPUT</span>
+          <span class="output-modal-sub" id="output-modal-sub"></span>
+        </div>
+        <div class="output-modal-actions">
+          <button type="button" id="output-modal-copy" class="output-modal-copy">Copy</button>
+          <button type="button" id="output-modal-close" class="modal-close" title="Close" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div class="modal-body output-modal-body" id="output-modal-body"></div>
     </div>
   </div>
 

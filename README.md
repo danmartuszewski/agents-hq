@@ -45,6 +45,7 @@ Press `?` to see all shortcuts. The main ones:
 - `j`/`k` or arrow keys cycle through agents, `Enter` opens the detail panel
 - `t` cycles the color theme, `r` resets the camera in HQ/Graph
 - `p` pauses/resumes the spoken voice queue, `m` mutes/unmutes the voice (do-not-disturb)
+- `o` expands the selected agent's output into a full-screen reader
 
 ## Agent detail panel
 
@@ -56,6 +57,18 @@ Click any agent in any view to open the detail panel. It shows:
 - Full event log
 
 Everything in the panel follows the active theme.
+
+## Output
+
+Instead of reading an agent's raw response in the terminal, the dashboard can show its **finished output nicely formatted** right in the detail panel. Turn it on under **SETTINGS → Output** ("Show agent output in detail panel") — it's off by default.
+
+When on, an **OUTPUT** section appears in the agent detail panel, rendering the agent's last completed message as clean Markdown — headings, lists, tables, code blocks, bold/italic, and links.
+
+- **Deterministic and local** — the Markdown is rendered client-side. No API call, no cost, no latency, and the output is shown verbatim (nothing is summarized, reordered, or rewritten — unlike the spoken [Voice](#voice) summaries).
+- **Safe** — every character is HTML-escaped before rendering, so raw HTML in an agent's output (e.g. a `<script>` tag) shows as text and never executes.
+- **Expand to a full-screen reader** — the sidebar is narrow, so click the expand (⤢) button in the OUTPUT header, click the preview, or press **`o`** to open the output in a centered popup. Wide tables and long code blocks get room to breathe; press `Esc`, click the backdrop, or hit the ✕ to close. A **Copy** button copies the raw Markdown.
+
+The last finished output is cached per agent, so it stays readable even after the agent starts its next turn. Everything follows the active theme.
 
 ## Voice
 
