@@ -229,6 +229,8 @@
           <h3 class="settings-h">Output</h3>
           <div class="cleanup-option format-check-option" data-format="show"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> Show agent output in detail panel</div>
           <div class="settings-hint">Shows each agent's finished response in its detail panel — clean and readable instead of raw console text. Local render only, no API call.</div>
+          <div class="cleanup-option format-check-option" data-format="ai"><span class="check-mark"><svg viewBox="0 0 24 24" width="13" height="13" style="vertical-align:-2px" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/></svg></span> Enable AI formatting (uses Claude)</div>
+          <div class="settings-hint">Adds an "✨ Enhance" button in the expanded output that reformats it into richer, themed HTML using a quick Claude model. On-demand only — nothing runs until you click it. Falls back to the local render.</div>
         </section>
 
         <section class="settings-section">
@@ -272,6 +274,7 @@
           <span class="output-modal-sub" id="output-modal-sub"></span>
         </div>
         <div class="output-modal-actions">
+          <button type="button" id="output-modal-enhance" class="output-modal-enhance" style="display:none" title="Reformat with Claude">✨ Enhance</button>
           <button type="button" id="output-modal-copy" class="output-modal-copy">Copy</button>
           <button type="button" id="output-modal-close" class="modal-close" title="Close" aria-label="Close">✕</button>
         </div>

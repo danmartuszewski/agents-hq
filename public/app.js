@@ -400,6 +400,7 @@ function applyTheme(name, skipRender) {
   if (!skipRender) {
     renderCurrentLayout();
     if (selectedAgentId) renderAgentDetail();
+    refreshAiFrame();   // rebuild an open AI-formatted iframe with the new theme vars
   }
 }
 
@@ -639,6 +640,7 @@ document.getElementById('agent-output-expand')?.addEventListener('click', (e) =>
 document.getElementById('agent-detail-output')?.addEventListener('click', () => { if (outputTextFor(selectedAgentId)) openOutputPopup(); });
 document.getElementById('output-modal-close')?.addEventListener('click', (e) => { e.stopPropagation(); closeOutputPopup(); });
 document.getElementById('output-modal-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyOutputToClipboard(); });
+document.getElementById('output-modal-enhance')?.addEventListener('click', (e) => { e.stopPropagation(); enhanceOutput(); });
 document.getElementById('output-modal')?.addEventListener('click', (e) => { if (e.target.id === 'output-modal') closeOutputPopup(); });
 
 document.querySelectorAll('.notify-check-option').forEach(opt => {
@@ -2878,8 +2880,14 @@ function openOutputPopup() {
   outputPopupSnapshot = text;
   const shown = text.length > MAX ? text.slice(0, MAX) : text;
   const truncNote = text.length > MAX ? '<div class="detail-no-logs">Output truncated for display.</div>' : '';
-  document.getElementById('output-modal-body').innerHTML =
-    `<div class="detail-output">${renderMarkdown(shown)}${truncNote}</div>`;
+  const bodyEl = document.getElementById('output-modal-body');
+  bodyEl.style.display = ''; bodyEl.style.flexDirection = ''; bodyEl.style.overflow = '';
+  bodyEl.innerHTML = `<div class="detail-output">${renderMarkdown(shown)}${truncNote}</div>`;
+
+  // Reset the AI-formatted view; show the opt-in Enhance button only when enabled.
+  aiViewActive = false; currentAiHtml = '';
+  const enhBtn = document.getElementById('output-modal-enhance');
+  if (enhBtn) { enhBtn.style.display = formatFlags.ai ? '' : 'none'; enhBtn.textContent = '✨ Enhance'; enhBtn.disabled = false; }
 
   outputPopupTrigger = (document.activeElement && document.activeElement.isConnected) ? document.activeElement : null;
   modal.classList.add('open');
@@ -2917,6 +2925,118 @@ function copyOutputToClipboard() {
     navigator.clipboard.writeText(outputPopupSnapshot).then(done).catch(fallback);
   } else {
     fallback();
+  }
+}
+
+// ---- Optional AI-formatted view (opt-in, on-demand) ----
+// The server returns a themed HTML fragment; we render it inside a sandboxed,
+// opaque-origin iframe (no allow-same-origin, no scripts) with a strict CSP, so
+// model-generated HTML can never reach the dashboard DOM, cookies, or /api.
+// `var` (not `let`) so applyTheme() — which runs at load, before this line —
+// can reference these without a temporal-dead-zone error.
+var aiViewActive = false;
+var currentAiHtml = '';
+const aiCacheByText = new Map();   // snapshot text -> model HTML (avoid re-calling)
+const AI_IFRAME_VARS = [
+  '--bg', '--bg-panel', '--bg-card', '--bg-stat', '--bg-input', '--border', '--border-faint',
+  '--accent', '--accent-dim', '--text', '--text-bright', '--text-content', '--text-muted',
+  '--status-active', '--status-idle', '--status-attention', '--scrollbar-thumb'
+];
+function aiThemeBlock() {
+  const cs = getComputedStyle(document.body);
+  return AI_IFRAME_VARS.map(v => { const val = cs.getPropertyValue(v).trim(); return val ? `${v}:${val};` : ''; }).join('');
+}
+function buildAiSrcdoc(modelHtml) {
+  return `<!doctype html><html><head>`
+    + `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'">`
+    + `<style>`
+    + `:root{${aiThemeBlock()}}`
+    + `html,body{margin:0}`
+    + `body{background:transparent;color:var(--text-content,#cfe);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:15px;line-height:1.7;padding:2px 4px 24px;word-wrap:break-word;overflow-wrap:anywhere}`
+    + `h1,h2,h3,h4{color:var(--text-bright);line-height:1.3;margin:22px 0 10px}h1{font-size:22px}h2{font-size:19px}h3{font-size:16px}h4{font-size:14px}`
+    + `p{margin:0 0 14px}a{color:var(--accent)}strong{color:var(--text-bright)}`
+    + `code{background:var(--bg-stat);border:1px solid var(--border-faint);border-radius:3px;padding:0 4px;font-size:13px}`
+    + `pre{background:var(--bg-input,#111);border:1px solid var(--border-faint);border-radius:6px;padding:14px 16px;overflow-x:auto;margin:0 0 14px}pre code{background:none;border:0;padding:0;white-space:pre}`
+    + `ul,ol{margin:0 0 14px;padding-left:26px}li{margin:3px 0}`
+    + `blockquote{margin:0 0 14px;padding:4px 16px;border-left:3px solid var(--accent-dim);color:var(--text-muted)}`
+    + `hr{border:0;border-top:1px solid var(--border-faint);margin:16px 0}`
+    + `table{border-collapse:collapse;width:100%;margin:0 0 14px;font-size:13px}th,td{border:1px solid var(--border-faint);padding:7px 12px;text-align:left}th{color:var(--text-bright);background:var(--bg-stat)}tr:nth-child(even) td{background:var(--bg-stat)}`
+    + `details{margin:0 0 14px;border:1px solid var(--border-faint);border-radius:6px;padding:8px 12px}summary{cursor:pointer;color:var(--text-bright)}`
+    + `::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px;border:3px solid transparent;background-clip:padding-box}::-webkit-scrollbar-track{background:transparent}`
+    + `</style></head><body>${modelHtml}</body></html>`;
+}
+function setEnhanceBtn(label, disabled) {
+  const b = document.getElementById('output-modal-enhance');
+  if (b) { b.textContent = label; b.disabled = !!disabled; }
+}
+function renderAiView(modelHtml) {
+  const body = document.getElementById('output-modal-body');
+  if (!body) return;
+  currentAiHtml = modelHtml;
+  aiViewActive = true;
+  body.style.display = 'flex';
+  body.style.flexDirection = 'column';
+  body.style.overflow = 'hidden';
+  body.innerHTML = '';
+  const badge = document.createElement('div');
+  badge.className = 'output-ai-badge';
+  badge.textContent = '✨ AI-formatted';
+  const frame = document.createElement('iframe');
+  frame.className = 'output-ai-frame';
+  frame.setAttribute('sandbox', '');   // opaque origin, no scripts, no same-origin
+  frame.setAttribute('title', 'AI-formatted output');
+  frame.srcdoc = buildAiSrcdoc(modelHtml);
+  body.appendChild(badge);
+  body.appendChild(frame);
+  setEnhanceBtn('Show original', false);
+}
+function renderOriginalView() {
+  const body = document.getElementById('output-modal-body');
+  if (!body) return;
+  aiViewActive = false;
+  body.style.display = '';
+  body.style.flexDirection = '';
+  body.style.overflow = '';
+  body.innerHTML = `<div class="detail-output">${renderMarkdown(outputPopupSnapshot)}</div>`;
+  setEnhanceBtn('✨ Enhance', false);
+}
+function refreshAiFrame() {
+  if (!aiViewActive || !outputPopupOpen()) return;
+  const f = document.querySelector('.output-ai-frame');
+  if (f && currentAiHtml) f.srcdoc = buildAiSrcdoc(currentAiHtml);
+}
+function showEnhanceError(code) {
+  const body = document.getElementById('output-modal-body');
+  if (!body) return;
+  const msg = code === 'no-ai-backend'
+    ? 'AI formatting needs the Claude CLI or an API key.'
+    : 'Could not format this output. Showing the original.';
+  const note = document.createElement('div');
+  note.className = 'output-ai-error';
+  note.textContent = msg;
+  body.insertBefore(note, body.firstChild);
+  setTimeout(() => { note.remove(); }, 4000);
+}
+async function enhanceOutput() {
+  if (aiViewActive) { renderOriginalView(); return; }   // toggle back to original
+  const text = outputPopupSnapshot;
+  if (!text) return;
+  const cached = aiCacheByText.get(text);
+  if (cached) { renderAiView(cached); return; }
+  setEnhanceBtn('…', true);
+  let data = null;
+  try {
+    data = await fetch('/api/htmlify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.slice(0, 6000) })
+    }).then(r => r.json());
+  } catch { data = null; }
+  if (data && data.ok && data.html) {
+    aiCacheByText.set(text, data.html);
+    renderAiView(data.html);
+  } else {
+    setEnhanceBtn('✨ Enhance', false);
+    showEnhanceError(data && data.error);
   }
 }
 
@@ -3259,7 +3379,7 @@ let ttsAllVoices = [];   // [{name, lang}] fetched from /api/voices
 // Off by default; toggled from Settings. Purely presentational, no LLM, no
 // server call — it renders the `finishedMessage` the server already broadcasts.
 let formatFlags = (() => {
-  const def = { show: false };
+  const def = { show: false, ai: false };
   const stored = localStorage.getItem('agents-hq-format-flags');
   if (stored) { try { return { ...def, ...JSON.parse(stored) }; } catch {} }
   return def;

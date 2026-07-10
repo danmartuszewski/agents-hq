@@ -512,6 +512,93 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, new Promise(res => setTimeout(() => res(null), ms))]);
 }
 
+// ---- Optional AI output formatting: reformat an agent's finished message into
+// themed HTML shown in the output popup. Opt-in and on-demand (POST /api/htmlify).
+// The HTML is rendered client-side inside a sandboxed, opaque-origin iframe, so
+// it can never touch the dashboard DOM/cookies/API. This server pass is a
+// convenience + a defense-in-depth sanitize; the iframe is the real boundary. ----
+const HTML_FORMAT_SYSTEM =
+  "You reformat an AI coding agent's finished message into clean, well-structured HTML for a dashboard panel. " +
+  "RULES:\n" +
+  "- RESTRUCTURE for readability; do NOT rewrite, summarize, or invent. Preserve every fact, number, file path, and code snippet verbatim.\n" +
+  "- Output ONLY an HTML body fragment. Never emit <html>, <head>, <body>, <script>, <style>, <iframe>, <object>, <embed>, <form>, <link>, <meta>, or any on* event attribute.\n" +
+  "- Allowed tags only: h1,h2,h3,h4,p,ul,ol,li,strong,em,code,pre,blockquote,hr,br,a,table,thead,tbody,tr,th,td,div,span,details,summary.\n" +
+  "- Reproduce code and commands exactly inside <pre><code>...</code></pre>. Do not alter them.\n" +
+  "- For any color, use ONLY CSS variables via inline style, e.g. style=\"color:var(--accent)\". Never hardcode hex or rgb. Available tokens: --text, --text-bright, --text-content, --text-muted, --accent, --accent-dim, --bg, --bg-card, --bg-stat, --border, --border-faint, --status-active, --status-idle, --status-attention.\n" +
+  "- Use <details><summary>Heading</summary>...</details> to make long or secondary sections collapsible when it helps. Never use JavaScript.\n" +
+  "- Links: https:// URLs only.\n" +
+  "Output only the HTML fragment, no prose, no code fences.";
+
+function htmlModel(kind) {
+  const env = process.env.AI_HTML_MODEL || '';
+  if (kind === 'api') return /^claude-/.test(env) ? env : 'claude-haiku-4-5';
+  return env || 'haiku';
+}
+
+async function htmlifyViaApi(raw) {
+  const client = getAnthropicClient();
+  if (!client) return null;
+  const msg = await client.messages.create({
+    model: htmlModel('api'),
+    max_tokens: 1500,
+    system: HTML_FORMAT_SYSTEM,
+    messages: [{ role: 'user', content: String(raw).slice(0, 6000) }]
+  });
+  const text = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+  return text || null;
+}
+
+function htmlifyViaCli(raw) {
+  return new Promise((resolve) => {
+    const prompt = `${HTML_FORMAT_SYSTEM}\n\nMessage to reformat:\n${String(raw).slice(0, 6000)}`;
+    let child;
+    try {
+      child = spawn('claude', ['-p', prompt, '--model', htmlModel('cli'), '--output-format', 'text'], {
+        cwd: os.tmpdir(),
+        env: { ...process.env, AGENTS_HQ_NO_TRACK: '1' },
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } catch { return resolve(null); }
+    let out = '';
+    child.stdout.on('data', d => { out += d; });
+    const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 30000);
+    child.on('error', () => { clearTimeout(killer); resolve(null); });
+    child.on('close', (code) => { clearTimeout(killer); const t = out.trim(); resolve(code === 0 && t ? t : null); });
+  });
+}
+
+async function htmlifyOutput(raw) {
+  const backend = resolveSummarizer();
+  if (backend === 'heuristic') return null;   // no LLM available → caller falls back
+  try {
+    if (backend === 'api') return await htmlifyViaApi(raw);
+    if (backend === 'cli') return await htmlifyViaCli(raw);
+  } catch { /* fall through */ }
+  return null;
+}
+
+// Allowlist sanitize — defense-in-depth behind the sandboxed iframe. Strips
+// dangerous tags/attributes even though the iframe already can't execute them.
+function sanitizeHtmlFragment(html) {
+  let h = String(html || '').trim();
+  h = h.replace(/^```(?:html)?\s*/i, '').replace(/```\s*$/i, '').trim();   // strip stray code fences
+  h = h.replace(/<\s*(script|style)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '');  // drop script/style + content
+  h = h.replace(/<\s*\/?\s*(script|style|iframe|object|embed|form|link|meta|base|html|head|body)\b[^>]*>/gi, '');
+  h = h.replace(/\son[a-z]+\s*=\s*"[^"]*"/gi, '')
+       .replace(/\son[a-z]+\s*=\s*'[^']*'/gi, '')
+       .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, '');
+  h = h.replace(/(href|src)\s*=\s*"(\s*javascript:[^"]*)"/gi, '$1="#"')
+       .replace(/(href|src)\s*=\s*'(\s*javascript:[^']*)'/gi, "$1='#'");
+  return h.slice(0, 60000);
+}
+
+const htmlCache = new Map();   // sha1(text) -> sanitized html fragment
+const HTML_CACHE_MAX = 100;
+function htmlCacheSet(key, val) {
+  htmlCache.set(key, val);
+  if (htmlCache.size > HTML_CACHE_MAX) htmlCache.delete(htmlCache.keys().next().value);
+}
+
 // ---- Voice engines: render speech to an audio file. `say` is the free local
 // default; OpenAI (gpt-4o-mini-tts) gives much better voices when OPENAI_API_KEY
 // is set. The browser plays whatever file we produce, so engines are pluggable. ----
@@ -760,6 +847,25 @@ app.post('/api/speak', (req, res) => {
   playNextTts();
   broadcastTtsState();
   res.json({ ok: true, queued: ttsQueue.length + (ttsSpeaking ? 1 : 0) });
+});
+
+// Optional, opt-in: reformat an agent's output into themed HTML via a quick
+// Claude model. On-demand only (the client calls this when the user clicks
+// "Enhance"). Returns a fragment the client renders in a sandboxed iframe.
+app.post('/api/htmlify', async (req, res) => {
+  const text = ((req.body && req.body.text) || '').toString().slice(0, 6000);
+  if (!text.trim()) return res.json({ ok: false, error: 'empty' });
+  if (resolveSummarizer() === 'heuristic') return res.json({ ok: false, error: 'no-ai-backend' });
+  const key = crypto.createHash('sha1').update('htmlv1|' + text).digest('hex');
+  const cached = htmlCache.get(key);
+  if (cached) return res.json({ ok: true, html: cached, cached: true });
+  let html = null;
+  try { html = await withTimeout(htmlifyOutput(text), 35000); } catch { html = null; }
+  if (!html) return res.json({ ok: false, error: 'failed' });
+  html = sanitizeHtmlFragment(html);
+  if (!html.trim()) return res.json({ ok: false, error: 'empty' });
+  htmlCacheSet(key, html);
+  res.json({ ok: true, html });
 });
 
 // Serve a rendered audio file (basename only — no path traversal).

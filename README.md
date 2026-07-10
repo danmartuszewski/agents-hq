@@ -70,6 +70,15 @@ When on, an **OUTPUT** section appears in the agent detail panel, rendering the 
 
 The last finished output is cached per agent, so it stays readable even after the agent starts its next turn. Everything follows the active theme.
 
+### AI formatting (optional)
+
+The local render above is deterministic and free. If you want richer structure — callouts, collapsible sections, cleaner hierarchy — enable **SETTINGS → Output → "Enable AI formatting"** (off by default). This adds an **✨ Enhance** button to the expanded output popup. It's **on-demand only** — nothing calls Claude until you click it.
+
+- On click, the output is sent to a quick Claude model (Haiku via the API when `ANTHROPIC_API_KEY` is set, otherwise your `claude` CLI subscription — same backend selection as Voice) with instructions to **restructure, not rewrite** (facts, numbers, and code are preserved verbatim). Override the model with `AI_HTML_MODEL`.
+- The result is themed to match the active theme and shown with an **AI-formatted** label; **Show original** flips back to the deterministic render at any time.
+- **Safety:** the model-generated HTML is rendered inside a sandboxed, opaque-origin `<iframe>` (no scripts, strict CSP) and allowlist-sanitized server-side, so it can never touch the dashboard, your data, or the network. If a call fails, it falls back to the local render.
+- Results are cached per output, so re-opening doesn't spend again. Requires the `claude` CLI or an Anthropic API key; with neither, the button reports that it's unavailable.
+
 ## Voice
 
 The dashboard can **speak agent responses out loud**, queued one at a time across all your concurrent agents — so you can keep working in another window and just listen as each agent finishes. Everything is configured under **NOTIFY → SPEAK (TTS)**.
