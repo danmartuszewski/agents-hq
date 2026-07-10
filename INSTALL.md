@@ -43,7 +43,7 @@ sleep 2
 curl -s -o /dev/null -w "%{http_code}" http://localhost:3141/
 ```
 
-A `200` confirms the server is up. If the port is already in use, ask the user whether to kill the existing process (`lsof -ti:3141 | xargs kill`) or pick a different port.
+A `200` confirms the server is up. If the port is already in use, ask the user whether to kill the existing process (`lsof -ti:3141 -sTCP:LISTEN | xargs kill`) or pick a different port.
 
 ### 5. Install global Claude Code hooks
 
@@ -101,7 +101,7 @@ Report to the user:
 
 - Dashboard URL: `http://localhost:3141`
 - Background log: `/tmp/agents-hq.log`
-- Stop command: `lsof -ti:3141 | xargs kill`
+- Stop command: `lsof -ti:3141 -sTCP:LISTEN | xargs kill`
 - Any new Claude Code session they open will now appear on the dashboard.
 
 If they want the server to autostart on login, point them to the **Auto-start on login** section in `README.md`.
@@ -122,4 +122,4 @@ If they want the server to autostart on login, point them to the **Auto-start on
 
 ## Uninstall
 
-Remove the seven hook entries from `~/.claude/settings.json` and kill the server (`lsof -ti:3141 | xargs kill`). The repo directory can then be deleted.
+Remove the seven hook entries from `~/.claude/settings.json` and kill the server (`lsof -ti:3141 -sTCP:LISTEN | xargs kill`). The repo directory can then be deleted.

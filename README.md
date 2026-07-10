@@ -142,21 +142,27 @@ Opens at `http://localhost:3141`.
 
 ### Running in background
 
-`npm start` occupies a terminal. To run the dashboard without keeping a terminal open:
+`npm start` occupies a terminal. To run the dashboard without keeping a terminal open, pick one of two levels:
 
-**Quick (session-only)**
+**1. Detached with `nohup` — survives closing the terminal**
+
+The simplest way, and enough for most setups: the server keeps running after you close the terminal (or log out of the shell session), and stays up until you stop it or the machine reboots.
 
 ```bash
 nohup npm start > /tmp/agents-hq.log 2>&1 &
 ```
 
-The server runs in the background and survives closing the terminal. Logs go to `/tmp/agents-hq.log`. To stop it:
+Logs go to `/tmp/agents-hq.log`. To stop it:
 
 ```bash
-lsof -ti:3141 | xargs kill
+lsof -ti:3141 -sTCP:LISTEN | xargs kill
 ```
 
-**Auto-start on login (macOS launchd)**
+> The `-sTCP:LISTEN` filter matters: it targets only the server process. Without it, `lsof -ti:3141` also matches anything *connected* to the port (like a browser tab open on the dashboard) and would kill those too.
+
+To have it come back after every reboot without thinking about it, either re-run the `nohup` command after login, or use launchd below for a fully hands-off setup.
+
+**2. Auto-start on login (macOS launchd) — survives reboot, restarts on crash**
 
 Create `~/Library/LaunchAgents/com.agents-hq.server.plist`:
 
