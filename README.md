@@ -200,6 +200,32 @@ launchctl load ~/Library/LaunchAgents/com.agents-hq.server.plist
 ```
 
 This starts the server automatically on login and restarts it if it crashes. To stop:
+**Shortcut: an `hq` shell command**
+
+To avoid remembering the commands above, add this function to `~/.zshrc` (or `~/.bashrc`), replacing `/path/to/agents-hq` with the actual project path:
+
+```zsh
+hq() {
+  local dir=/path/to/agents-hq log=/tmp/agents-hq.log port=3141
+  local pid=$(lsof -ti:$port -sTCP:LISTEN)
+  case "$1" in
+    start)
+      [[ -n $pid ]] && { echo "agents-hq already running (pid $pid)"; return; }
+      (cd $dir && nohup npm start > $log 2>&1 &)
+      echo "agents-hq started → http://localhost:$port (logs: $log)" ;;
+    stop)
+      [[ -z $pid ]] && { echo "agents-hq not running"; return; }
+      kill $pid && echo "agents-hq stopped" ;;
+    restart) hq stop; sleep 1; hq start ;;
+    status)  [[ -n $pid ]] && echo "running (pid $pid)" || echo "stopped" ;;
+    logs)    tail -f $log ;;
+    *)       echo "usage: hq start|stop|restart|status|logs" ;;
+  esac
+}
+```
+
+Reload with `source ~/.zshrc`, then use `hq start`, `hq stop`, `hq restart` (after pulling code changes), `hq status`, or `hq logs`. It finds the server by its listening port, so it only ever stops the server process. If you run it under launchd instead, don't use `hq stop` — launchd's `KeepAlive` would just restart it; use `launchctl` as shown below.
+
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.agents-hq.server.plist
