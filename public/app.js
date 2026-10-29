@@ -4819,7 +4819,13 @@ function connect() {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${protocol}//${location.host}`);
 
-  ws.onopen = () => { window._startTime = Date.now(); };
+  ws.onopen = () => {
+    window._startTime = Date.now();
+    // The server disarms auto-reply when its last tab disconnects (and on
+    // restart) — forget what we told it so registerAutoReply() re-sends.
+    voiceAutoReplyRegistered = false;
+    registerAutoReply();
+  };
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);

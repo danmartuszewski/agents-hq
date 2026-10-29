@@ -11,7 +11,7 @@ const { mountVoice } = require('./voice');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, verifyClient: ({ req }) => requestAllowed(req) });
 
 const STATE_DIR = path.join(__dirname, 'state', 'agents');
 const ACTIVITY_LOG_PATH = path.join(__dirname, 'state', 'activity-log.json');
@@ -154,6 +154,32 @@ function appendAgentEventLog(filePath, entry) {
   }
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
+
+// Same-browser guard for the whole dashboard (HTTP + WebSocket). A foreign
+// Origin means another site is driving the dashboard from your browser (CSRF);
+// a non-loopback Host while bound to loopback means DNS rebinding. When HOST is
+// deliberately set to a LAN address the Host check is skipped — the name the
+// dashboard is reached by can't be known — but cross-site requests stay blocked.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const BOUND_LOOPBACK = LOOPBACK_HOSTS.has((process.env.HOST || '127.0.0.1').toLowerCase());
+function hostnameOf(hostHeader) {
+  const h = String(hostHeader || '').toLowerCase();
+  if (h.startsWith('[')) return h.slice(0, h.indexOf(']') + 1);
+  return h.split(':')[0];
+}
+function requestAllowed(req) {
+  const host = String(req.headers.host || '').toLowerCase();
+  if (BOUND_LOOPBACK && !LOOPBACK_HOSTS.has(hostnameOf(host))) return false;
+  const origin = req.headers.origin;
+  if (origin) {
+    try { if (new URL(origin).host !== host) return false; } catch { return false; }
+  }
+  return true;
+}
+app.use((req, res, next) => {
+  if (requestAllowed(req)) return next();
+  res.status(403).json({ error: 'forbidden-origin' });
+});
 
 // Always revalidate static assets (ETag makes this cheap) so a redeploy of
 // app.js / style.css is picked up immediately instead of a stale cached copy.
@@ -1389,6 +1415,14 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'message_history', messages: messageLog }));
   // Current speech-queue state
   ws.send(JSON.stringify(ttsSnapshot()));
+  // Auto-reply is armed by a tab; with no tab left nobody can answer, so stop
+  // holding the queue after every reply. A tab re-arms on reconnect.
+  ws.on('close', () => {
+    if (wss.clients.size === 0 && autoReplyArmed) {
+      setAutoReplyArmed(false);
+      setTtsHold(false);
+    }
+  });
 });
 
 function broadcast(msg) {

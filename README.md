@@ -498,7 +498,7 @@ WebSocket message types: `init`, `update`, `config_update`, `agent_message`, `me
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3141` | Server port |
-| `HOST` | `127.0.0.1` | Bind address. Loopback by default so the dashboard and voice endpoints aren't reachable from the LAN — set `0.0.0.0` to expose deliberately. |
+| `HOST` | `127.0.0.1` | Bind address. Loopback by default so the dashboard and voice endpoints aren't reachable from the LAN — set `0.0.0.0` to expose deliberately. Every request and WebSocket from a browser must come from the dashboard's own origin, so other websites can't drive it from your browser. While bound to loopback, the Host header must also be `localhost`/`127.0.0.1` (blocks DNS rebinding). |
 | `AGENTS_HQ_URL` | `http://localhost:3141` | Where hooks POST to (set if the dashboard isn't on localhost) |
 | `TTS_ENGINE` | auto | Voice engine: `say` or `openai`. Auto-picks `openai` when an OpenAI key is set, else `say`. |
 | `OPENAI_API_KEY` | — | OpenAI key for OpenAI voices and, if enabled, voice-input transcription (env fallback; the UI field takes precedence) |
