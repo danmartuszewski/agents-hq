@@ -7,6 +7,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
+const { mountVoice } = require('./voice');
 
 const app = express();
 const server = http.createServer(app);
@@ -31,6 +32,14 @@ function maskKey(k) { return k ? `${k.slice(0, 3)}…${k.slice(-4)}` : ''; }
 
 // Agent registry: keyed by agentId, grows as agents report in
 let agentRegistry = {};
+
+// Voice-bridge sweep-proof routing records. Held in server memory (not in state
+// files) so the 5-minute offline sweep — which clears finishedTurn/finishedSince
+// from idle sessions, exactly the away-from-keyboard case — cannot erase them.
+// Memory-only across restarts is accepted (documented in the plan).
+let lastSpokenAgent = null;    // { agentId, at }   — set when a summary starts playing
+let lastFinishedAgent = null;  // { agentId, at, summaryText } — set at Stop-hook ingest
+function getVoiceRecords() { return { lastSpokenAgent, lastFinishedAgent }; }
 
 // Per-agent tool timing: { agentId: { tool, startTime } }
 const agentToolTimers = {};
@@ -170,7 +179,7 @@ app.get('/api/messages', (req, res) => {
 // Update agent status via HTTP
 app.post('/api/agent/:id/status', (req, res) => {
   const id = decodeURIComponent(req.params.id);
-  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, parentAgentId, hookEvent, toolDetail, toolName: postToolName, transcriptTools, awaitingUser, awaitingMessage, finishedMessage } = req.body;
+  const { status, currentTask, currentTool, agentType, agentId, lastMessage, cwd, sessionId, parentAgentId, hookEvent, toolDetail, toolName: postToolName, transcriptTools, awaitingUser, awaitingMessage, finishedMessage, voiceTurn } = req.body;
   // Sanitize for filename: keep uniqueness but make filesystem-safe
   const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_');
   const filePath = path.join(STATE_DIR, `${safeFilename}.json`);
@@ -245,6 +254,27 @@ app.post('/api/agent/:id/status', (req, res) => {
     updated.finishedSince = new Date().toISOString();
     // Final assistant text for the client's text-to-speech queue.
     if (finishedMessage) updated.finishedMessage = finishedMessage;
+    // Sweep-proof voice routing record (survives the offline sweep that clears
+    // the state-file flags for idle sessions).
+    lastFinishedAgent = { agentId: id, at: Date.now(), summaryText: (finishedMessage || '').slice(0, 4000) };
+    // Pending-queue fallback: normally queued voice utterances flush when this
+    // agent's spoken summary finishes playing (advanceCurrent). If no summary
+    // will ever play (speech disabled, no tab open), flush after a grace period —
+    // but never while a summary for it is still queued/playing, which the
+    // injected turn's UserPromptSubmit would drop.
+    if (voice.isEnabled()) setTimeout(() => {
+      // Only a real queued/playing SUMMARY counts as busy: protected items
+      // (voice-system lines, replays, click-listens) are drop-exempt and never
+      // trigger the flush on completion, so counting them would strand the
+      // pending utterance until its TTL.
+      const isSummary = (i) => i && i.agentId === id && !i.voiceSystem && !i.replay && !i.userListen;
+      const busyTts = isSummary(ttsCurrentItem) || ttsQueue.some(isSummary);
+      if (!busyTts) { try { voice.flushPending(id); } catch {} }
+    }, 45000);
+    // Voice-stale badge: a voice-injected turn landed that the still-open TUI's
+    // in-memory conversation never saw. Set the flag; it is cleared on reopen or
+    // manual dismiss, not by later events (see the escalation branch below).
+    if (voiceTurn === true) updated.voiceStale = true;
   } else if (
     hookEvent === 'PreToolUse' ||
     hookEvent === 'UserPromptSubmit' ||
@@ -254,6 +284,12 @@ app.post('/api/agent/:id/status', (req, res) => {
       updated.finishedTurn = false;
       delete updated.finishedSince;
       delete updated.finishedMessage;
+    }
+    // If a TERMINAL-originated turn (no voiceTurn marker) starts on a voice-stale
+    // session, the human typed into a TUI that never saw the injected turns —
+    // escalate rather than silently clear, so the divergence is surfaced.
+    if (updated.voiceStale && voiceTurn !== true && hookEvent === 'UserPromptSubmit') {
+      updated.voiceStaleEscalated = true;
     }
     // The agent is active again — any still-queued summary for it is now stale.
     dropQueuedForAgent(id);
@@ -368,11 +404,161 @@ const ttsQueue = [];        // [{ id, agentId, text, voice, rate, label, preview
 let ttsCurrentItem = null;  // item currently handed to the browser to play
 let ttsSpeaking = false;    // a current item is assigned (rendered + playing)
 let ttsPaused = false;      // playback paused (browser <audio> paused), queue held
+let ttsHold = false;        // voice reply-window hold: block queue advancement while
+                            // the auto-listen mic is open (window ⇄ TTS are mutually
+                            // exclusive audio states, so the mic never hears TTS)
 let ttsRendering = false;   // a `say -o` render is in progress
 let ttsWatchdog = null;     // stall guard if no client ever reports "done"
 let ttsSeq = 0;
 
+// Set by the voice reply-window (client) via /api/voice/hold, or synchronously by
+// the server when a reply finishes while auto-reply is armed (see advanceCurrent).
+// A safety timer auto-releases the hold if the client dies mid-window so the queue
+// can never get permanently stuck.
+let ttsHoldTimer = null;
+const TTS_HOLD_SAFETY_MS = 90000;
+function setTtsHold(v) {
+  ttsHold = !!v;
+  if (ttsHoldTimer) { clearTimeout(ttsHoldTimer); ttsHoldTimer = null; }
+  if (ttsHold) {
+    ttsHoldTimer = setTimeout(() => { ttsHoldTimer = null; ttsHold = false; broadcastTtsState(); playNextTts(); }, TTS_HOLD_SAFETY_MS);
+  } else {
+    playNextTts();
+  }
+  broadcastTtsState();
+}
+
+// Whether a client has the "answer after each reply" mode armed. When true, the
+// server holds the TTS queue the instant a reply finishes — before the next item
+// can start — so the reopened mic never hears the following message.
+let autoReplyArmed = false;
+function setAutoReplyArmed(v) { autoReplyArmed = !!v; }
+
 const TTS_WATCHDOG_MS = 180000;   // drain a stuck current item after 3 min
+
+// Callbacks fired when a specific TTS item reaches a terminal state (played,
+// skipped, or watchdog). Used by the voice bridge to anchor the confirmation
+// cancel-window and the pending-queue flush to actual playback completion.
+const ttsDoneCallbacks = new Map();   // ttsItemId -> fn
+function fireTtsDone(item) {
+  if (!item || !ttsDoneCallbacks.has(item.id)) return;
+  const cb = ttsDoneCallbacks.get(item.id);
+  ttsDoneCallbacks.delete(item.id);
+  try { cb(); } catch {}
+}
+
+// Voice input switched off: drop its queued status lines and their callbacks.
+function dropVoiceSystemItems() {
+  const before = ttsQueue.length;
+  for (let i = ttsQueue.length - 1; i >= 0; i--) {
+    if (ttsQueue[i].voiceSystem) { ttsDoneCallbacks.delete(ttsQueue[i].id); ttsQueue.splice(i, 1); }
+  }
+  if (ttsQueue.length !== before) broadcastTtsState();
+}
+
+// ---- Spoken history: every agent line that actually played is recorded with
+// its FINAL prepared speech text (post-summary) + voice/rate. Replaying is then
+// deterministic: same (engine, voice, rate, text) → same content-hash → the
+// cached audio file is reused; only evicted entries re-render, and nothing is
+// ever re-summarized. Persisted so history survives server restarts (the audio
+// cache lives in tmpdir and may not).
+const SPOKEN_HISTORY_PATH = path.join(__dirname, 'state', 'spoken-history.json');
+const SPOKEN_HISTORY_MAX = 100;
+let spokenHistory = [];   // newest first: { id, agentId, at, label, preview, speakText, voice, rate, outputKey, pauseOtherMedia }
+let spokenHistorySeq = 0;
+try {
+  const loaded = JSON.parse(fs.readFileSync(SPOKEN_HISTORY_PATH, 'utf8'));
+  if (Array.isArray(loaded)) {
+    // Shape-validate: a hand-edited or torn file must not brick the endpoints.
+    spokenHistory = loaded
+      .filter(e => e && typeof e === 'object' && typeof e.agentId === 'string' && typeof e.speakText === 'string')
+      .slice(0, SPOKEN_HISTORY_MAX);
+  }
+} catch {}
+let spokenHistorySaveTimer = null;
+function saveSpokenHistory() {
+  if (spokenHistorySaveTimer) return;
+  spokenHistorySaveTimer = setTimeout(() => {
+    spokenHistorySaveTimer = null;
+    try { fs.writeFileSync(SPOKEN_HISTORY_PATH, JSON.stringify(spokenHistory)); } catch {}
+  }, 1500);
+}
+// Removing an agent (cleanup / reset) also removes what was spoken for it.
+function purgeSpokenHistory(pred) {
+  const before = spokenHistory.length;
+  spokenHistory = spokenHistory.filter(e => !pred(e));
+  if (spokenHistory.length !== before) saveSpokenHistory();
+}
+app.post('/api/speak/history/clear', (req, res) => {
+  purgeSpokenHistory(() => true);
+  res.json({ ok: true });
+});
+function flushSpokenHistory() {
+  if (!spokenHistorySaveTimer) return;
+  clearTimeout(spokenHistorySaveTimer);
+  spokenHistorySaveTimer = null;
+  try { fs.writeFileSync(SPOKEN_HISTORY_PATH, JSON.stringify(spokenHistory)); } catch {}
+}
+// Identity of the output an entry was spoken FROM — lets the Listen button
+// verify the newest history entry matches the output on screen (an output that
+// was muted/stopped/dropped has no entry while an older turn does).
+function spokenOutputKey(raw) {
+  if (!raw) return '';
+  return crypto.createHash('sha1').update(String(raw).slice(0, 6000)).digest('hex').slice(0, 16);
+}
+function recordSpokenHistory(item, speakText) {
+  if (!item.agentId || item.voiceSystem || item.replay || !speakText) return;
+  spokenHistory.unshift({
+    id: `h${Date.now().toString(36)}${(++spokenHistorySeq).toString(36)}`,
+    agentId: item.agentId,
+    at: Date.now(),
+    label: item.label || '',
+    preview: (item.preview || speakText).slice(0, 140),
+    speakText: speakText.slice(0, 6000),
+    // Full original output, so the reader popup can DISPLAY a past message,
+    // not just replay its audio. (Entries recorded before this field existed
+    // fall back to speakText in the viewer.)
+    rawText: String(item.rawText || item.text || '').slice(0, 6000),
+    voice: item.voice || '',
+    rate: item.rate || 0,
+    outputKey: spokenOutputKey(item.rawText || item.text),
+    pauseOtherMedia: !!item.pauseOtherMedia
+  });
+  if (spokenHistory.length > SPOKEN_HISTORY_MAX) spokenHistory.length = SPOKEN_HISTORY_MAX;
+  saveSpokenHistory();
+}
+
+// Enqueue a PROTECTED voice-system utterance (confirmation / "queued" / error
+// line). Marked `voiceSystem` so dropQueuedForAgent and the Phase 2 queue-freeze
+// skip it. Priority-enqueued so it is heard before the model reply it precedes.
+// onDonePlaying fires once the item finishes playing (its /api/speak/done).
+function speakVoiceSystem(text, opts = {}) {
+  const clean = String(text || '').slice(0, 600);
+  if (!clean.trim()) return null;
+  const item = {
+    id: ++ttsSeq,
+    agentId: typeof opts.agentId === 'string' ? opts.agentId : '',
+    text: clean,
+    rawText: '',
+    lead: '',
+    summarize: false,
+    pauseOtherMedia: false,
+    voice: '',
+    rate: 0,
+    label: (opts.label || 'voice').toString().slice(0, 80),
+    preview: clean.slice(0, 140),
+    priority: true,
+    voiceSystem: true
+  };
+  if (typeof opts.onDonePlaying === 'function') ttsDoneCallbacks.set(item.id, opts.onDonePlaying);
+  // Insert behind earlier priority items but ahead of normal items.
+  let idx = 0;
+  while (idx < ttsQueue.length && ttsQueue[idx].priority) idx++;
+  ttsQueue.splice(idx, 0, item);
+  playNextTts();
+  broadcastTtsState();
+  return item.id;
+}
 
 // Cache of valid voice names so an unknown/stale voice falls back to default
 // instead of failing the utterance silently.
@@ -736,12 +922,14 @@ function ttsSnapshot() {
     type: 'tts',
     speaking: ttsSpeaking,
     paused: ttsPaused,
+    hold: ttsHold,
     queued: ttsQueue.length,
     current: ttsCurrentItem
       ? { id: ttsCurrentItem.id, agentId: ttsCurrentItem.agentId, label: ttsCurrentItem.label,
-          preview: ttsCurrentItem.preview, priority: ttsCurrentItem.priority, audioUrl: ttsCurrentItem.audioUrl }
+          preview: ttsCurrentItem.preview, priority: ttsCurrentItem.priority, replay: !!ttsCurrentItem.replay,
+          voiceSystem: !!ttsCurrentItem.voiceSystem, audioUrl: ttsCurrentItem.audioUrl }
       : null,
-    queue: ttsQueue.map(i => ({ id: i.id, agentId: i.agentId, label: i.label, preview: i.preview, priority: i.priority }))
+    queue: ttsQueue.map(i => ({ id: i.id, agentId: i.agentId, label: i.label, preview: i.preview, priority: i.priority, replay: !!i.replay, voiceSystem: !!i.voiceSystem }))
   };
 }
 
@@ -761,7 +949,7 @@ async function prepareItem(item) {
   }
   const rendered = await withTimeout(renderAudio(item, speakText), 30000);
   if (!rendered) return null;
-  item._prepared = { url: rendered.url, preview };
+  item._prepared = { url: rendered.url, preview, speakText };
   return item._prepared;
 }
 
@@ -777,6 +965,11 @@ function dropQueuedForAgent(agentId) {
   if (!agentId) return;
   const before = ttsQueue.length;
   for (let i = ttsQueue.length - 1; i >= 0; i--) {
+    // Voice-system items (confirmations / "queued" / error lines) are protected:
+    // the injected run itself fires this agent's UserPromptSubmit 1–3s after
+    // spawn, which would otherwise silently delete the mishear-veto confirmation.
+    // Replays and click-listens are protected too — explicitly requested.
+    if (ttsQueue[i].voiceSystem || ttsQueue[i].replay || ttsQueue[i].userListen) continue;
     if (ttsQueue[i].agentId === agentId) ttsQueue.splice(i, 1);
   }
   if (ttsQueue.length !== before) broadcastTtsState();
@@ -786,6 +979,23 @@ function dropQueuedForAgent(agentId) {
 function advanceCurrent(id) {
   if (ttsWatchdog) { clearTimeout(ttsWatchdog); ttsWatchdog = null; }
   if (id !== undefined && ttsCurrentItem && ttsCurrentItem.id !== id) return; // stale done
+  // Fire any terminal-state callback registered for this item (voice bridge).
+  fireTtsDone(ttsCurrentItem);
+  // A genuine agent reply just finished playing (not a protected voice-system
+  // confirmation, not a priority attention ask) → signal the client so the
+  // voice reply-window can open the mic for a hands-free answer.
+  const finished = ttsCurrentItem;
+  if (finished && finished.agentId && !finished.voiceSystem && !finished.priority) {
+    // Hold the queue NOW (synchronously, before playNextTts below can start the
+    // next item) if the client has auto-reply armed — closes the race where the
+    // following message would start playing into the about-to-open mic.
+    if (autoReplyArmed && voice.isEnabled()) setTtsHold(true);
+    broadcast({ type: 'voiceReplyDone', agentId: finished.agentId, at: Date.now() });
+    // The agent's summary has now been HEARD → deliver any voice utterance that
+    // queued while it was busy. (Flushing earlier would let the injected turn's
+    // UserPromptSubmit drop the still-queued summary via dropQueuedForAgent.)
+    try { voice.flushPending(finished.agentId); } catch {}
+  }
   cleanupAudio(ttsCurrentItem);
   ttsCurrentItem = null;
   ttsSpeaking = false;
@@ -794,7 +1004,7 @@ function advanceCurrent(id) {
 }
 
 async function playNextTts() {
-  if (ttsSpeaking || ttsPaused || ttsRendering) return;
+  if (ttsSpeaking || ttsPaused || ttsRendering || ttsHold) return;
   const item = ttsQueue.shift();
   if (!item) { ttsCurrentItem = null; broadcastTtsState(); maybeResumeOtherMedia(); return; }
   ttsRendering = true;
@@ -806,19 +1016,29 @@ async function playNextTts() {
   ttsRendering = false;
 
   if (ttsCurrentItem !== item) { setImmediate(playNextTts); return; }   // superseded by stop/skip
-  if (!prep) { ttsCurrentItem = null; setImmediate(playNextTts); return; }   // prep failed
+  // Prep failed: still fire its done-callback, so a voice confirmation that
+  // couldn't render doesn't silently strand the utterance it announces.
+  if (!prep) { fireTtsDone(item); ttsCurrentItem = null; setImmediate(playNextTts); return; }
 
   if (prep.preview) item.preview = prep.preview;
   await maybePauseOtherMedia(item);   // pause the user's music/video before the voice starts
   item.audioUrl = prep.url;
   ttsSpeaking = true;
+  // Sweep-proof "last spoken instance" record for voice routing. ORGANIC agent
+  // responses only: voice-system lines, replays of old messages, and click-
+  // initiated listens must not hijack the sticky voice target (the popup's own
+  // Reply mic already freezes to the popup's agent).
+  if (item.agentId && !item.voiceSystem && !item.replay && !item.userListen) {
+    lastSpokenAgent = { agentId: item.agentId, at: Date.now() };
+  }
+  recordSpokenHistory(item, prep.speakText);
   broadcastTtsState();   // client picks up audioUrl and plays it
   ttsWatchdog = setTimeout(() => advanceCurrent(), TTS_WATCHDOG_MS);
   prerenderNext();       // prepare the next line in the background
 }
 
 app.post('/api/speak', (req, res) => {
-  const { text, voice, rate, label, preview, agentId, priority, rawText, lead, summarize, pauseOtherMedia } = req.body || {};
+  const { text, voice, rate, label, preview, agentId, priority, rawText, lead, summarize, pauseOtherMedia, listen } = req.body || {};
   const clean = (text || '').toString().slice(0, 6000);
   if (!clean.trim()) return res.json({ ok: false, queued: ttsQueue.length });
   const item = {
@@ -833,7 +1053,11 @@ app.post('/api/speak', (req, res) => {
     rate: Number.isFinite(rate) ? rate : 0,
     label: (label || '').toString().slice(0, 80),
     preview: (preview || '').toString().slice(0, 140),
-    priority: !!priority
+    // A click-initiated Listen: jumps the queue like a replay and shares its
+    // protections, but IS recorded into spoken history (it's the first organic
+    // speak of this output). Being priority, it never fires voiceReplyDone.
+    userListen: !!listen,
+    priority: !!priority || !!listen
   };
   if (item.priority) {
     // Jump ahead of normal items but stay FIFO behind earlier priority items.
@@ -843,10 +1067,77 @@ app.post('/api/speak', (req, res) => {
   } else {
     ttsQueue.push(item);
   }
-  if (ttsQueue.length > 50) ttsQueue.shift();   // drop oldest if backed up
+  if (ttsQueue.length > 50) fireTtsDone(ttsQueue.shift());   // drop oldest if backed up
   playNextTts();
   broadcastTtsState();
   res.json({ ok: true, queued: ttsQueue.length + (ttsSpeaking ? 1 : 0) });
+});
+
+// Past spoken messages (final speech text, newest first) — for the popup's
+// history list and the Listen button.
+app.get('/api/speak/history', (req, res) => {
+  const agentId = typeof req.query.agentId === 'string' ? req.query.agentId : '';
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50);
+  const entries = (agentId ? spokenHistory.filter(e => e.agentId === agentId) : spokenHistory)
+    .slice(0, limit)
+    .map(e => ({ id: e.id, agentId: e.agentId, at: e.at, label: e.label, preview: e.preview }));
+  res.json({ ok: true, entries });
+});
+
+// Full content of one history entry — the reader popup shows past messages
+// inline (rawText when recorded; older entries only have the spoken summary).
+app.get('/api/speak/history/entry', (req, res) => {
+  const id = typeof req.query.id === 'string' ? req.query.id : '';
+  const e = spokenHistory.find(x => x.id === id);
+  if (!e) return res.json({ ok: false, reason: 'not-found' });
+  res.json({ ok: true, entry: {
+    id: e.id, agentId: e.agentId, at: e.at, label: e.label,
+    preview: e.preview, rawText: e.rawText || '', speakText: e.speakText || ''
+  } });
+});
+
+// Replay a past spoken message. Accepts {historyId} for a specific entry
+// (history dropdown — any entry, deliberately), or {agentId} for that agent's
+// newest one. When {agentId, rawText} are sent (the Listen button), the newest
+// entry must have been spoken FROM that exact output — otherwise ok:false so
+// the client speaks the actually-displayed output instead of a stale summary.
+// The stored speech text + voice + rate hit the audio content-hash cache, so
+// no re-summarization and usually no re-render happens.
+app.post('/api/speak/replay', (req, res) => {
+  const { historyId, agentId, rawText } = req.body || {};
+  let entry = null;
+  if (historyId) {
+    entry = spokenHistory.find(e => e.id === historyId);
+  } else if (typeof agentId === 'string' && agentId) {
+    if (typeof rawText === 'string' && rawText) {
+      const key = spokenOutputKey(rawText);
+      entry = spokenHistory.find(e => e.agentId === agentId && e.outputKey === key);
+    } else {
+      entry = spokenHistory.find(e => e.agentId === agentId);
+    }
+  }
+  if (!entry || !entry.speakText) return res.json({ ok: false, reason: 'no-history' });
+  const item = {
+    id: ++ttsSeq,
+    agentId: entry.agentId,
+    text: entry.speakText,
+    rawText: '',
+    lead: '',
+    summarize: false,           // already the prepared speech form
+    pauseOtherMedia: entry.pauseOtherMedia !== false,   // honor the original item's setting
+    voice: entry.voice || '',
+    rate: entry.rate || 0,
+    label: entry.label || 'replay',
+    preview: entry.preview || '',
+    priority: true,             // the user asked to hear it now
+    replay: true
+  };
+  let idx = 0;
+  while (idx < ttsQueue.length && ttsQueue[idx].priority) idx++;
+  ttsQueue.splice(idx, 0, item);
+  playNextTts();
+  broadcastTtsState();
+  res.json({ ok: true, id: item.id });
 });
 
 // Optional, opt-in: reformat an agent's output into themed HTML via a quick
@@ -892,6 +1183,7 @@ app.post('/api/speak/stop', (req, res) => {
   if (ttsWatchdog) { clearTimeout(ttsWatchdog); ttsWatchdog = null; }
   ttsQueue.length = 0;
   ttsPaused = false;
+  ttsDoneCallbacks.clear();   // discarded items' callbacks won't fire
   cleanupAudio(ttsCurrentItem);
   ttsCurrentItem = null;
   ttsSpeaking = false;
@@ -925,7 +1217,8 @@ app.post('/api/speak/resume', (req, res) => {
 app.post('/api/speak/remove', (req, res) => {
   const id = req.body && req.body.id;
   const idx = ttsQueue.findIndex(i => i.id === id);
-  if (idx >= 0) { ttsQueue.splice(idx, 1); broadcastTtsState(); }
+  // Removing a voice confirmation cancels the send it announces (its callback is dropped).
+  if (idx >= 0) { ttsDoneCallbacks.delete(ttsQueue[idx].id); ttsQueue.splice(idx, 1); broadcastTtsState(); }
   res.json({ ok: true });
 });
 
@@ -968,6 +1261,21 @@ app.post('/api/config/keys', (req, res) => {
   res.json({ ok: true, openai: { set: !!k, hint: maskKey(k) } });
 });
 
+// Clear the voice-stale badge for a session (manual dismiss, or on reopen).
+app.post('/api/agent/:id/voice-stale-dismiss', (req, res) => {
+  const id = decodeURIComponent(req.params.id);
+  const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const filePath = path.join(STATE_DIR, `${safeFilename}.json`);
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    delete data.voiceStale;
+    delete data.voiceStaleEscalated;
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    broadcast({ type: 'update', agent: data });
+    return res.json({ ok: true });
+  } catch { return res.json({ ok: false }); }
+});
+
 // Remove offline agents (keeps active/idle ones)
 // Optional query param: ?olderThan=ms (only remove agents offline longer than this)
 app.post('/api/cleanup/offline-agents', (req, res) => {
@@ -991,6 +1299,7 @@ app.post('/api/cleanup/offline-agents', (req, res) => {
   }
   if (removed > 0) {
     activityLog = activityLog.filter(e => !removedIds.has(e.agentId));
+    purgeSpokenHistory(e => removedIds.has(e.agentId));
     saveActivityLog();
     broadcast({ type: 'init', config: getRegistryArray(), states: readAllStates(), activityLog });
   }
@@ -1024,6 +1333,7 @@ app.post('/api/cleanup/offline-projects', (req, res) => {
   }
   if (removed > 0) {
     activityLog = activityLog.filter(e => !removedIds.has(e.agentId));
+    purgeSpokenHistory(e => removedIds.has(e.agentId));
     saveActivityLog();
     broadcast({ type: 'init', config: getRegistryArray(), states: readAllStates(), activityLog });
   }
@@ -1040,6 +1350,7 @@ app.post('/api/reset', (req, res) => {
     }
   }
   agentRegistry = {};
+  purgeSpokenHistory(() => true);
   Object.keys(typeColorMap).forEach(k => delete typeColorMap[k]);
   typeColorIndex = 0;
   messageLog.length = 0;
@@ -1163,6 +1474,22 @@ setInterval(() => {
     }
   }
 }, 10000); // check every 10s
+
+// ---- Voice bridge (input half of the voice loop) ----
+const voice = mountVoice(app, express, {
+  getOpenAIKey,
+  readAllStates,
+  broadcast,
+  speakVoiceSystem,
+  getVoiceRecords,
+  setTtsHold,
+  setAutoReplyArmed,
+  dropVoiceSystemItems,
+  stateRoot: path.join(__dirname, 'state')
+});
+function shutdownVoice() { try { voice.shutdown(); } catch {} }
+process.on('SIGINT', () => { shutdownVoice(); flushSpokenHistory(); process.exit(0); });
+process.on('SIGTERM', () => { shutdownVoice(); flushSpokenHistory(); process.exit(0); });
 
 const PORT = process.env.PORT || 3141;
 // Bind to loopback by default so the dashboard (and the speak endpoint) aren't

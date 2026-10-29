@@ -16,6 +16,8 @@ A real-time dashboard for your Claude Code agents. You spin up a team (researche
 
 Agents are grouped by project (derived from `cwd`) and by type. The dashboard builds itself as agents report in, no config needed. Main Claude Code sessions show up too, not just subagents.
 
+The dashboard needs no API keys and no extra setup. Spoken output, AI formatting and [voice input](#voice-input-optional-off-by-default) are optional extras: each is off by default, and you can ignore them entirely.
+
 ## Views
 
 Six layouts, switchable from the header (or press `1`-`6`):
@@ -45,6 +47,7 @@ Press `?` to see all shortcuts. The main ones:
 - `j`/`k` or arrow keys cycle through agents, `Enter` opens the detail panel
 - `t` cycles the color theme, `r` resets the camera in HQ/Graph
 - `p` pauses/resumes the spoken voice queue, `m` mutes/unmutes the voice (do-not-disturb)
+- `v` pauses/resumes [voice input](#voice-input-optional-off-by-default) (does nothing unless voice input is on). One press, or the mic-slash header button, discards any open mic and stops hands-free reply windows from opening, without touching spoken output. For when someone walks into the room and you start talking to *them*, not the model.
 - `o` expands the selected agent's output into a full-screen reader
 
 ## Agent detail panel
@@ -64,9 +67,11 @@ Instead of reading an agent's raw response in the terminal, the dashboard can sh
 
 When on, an **OUTPUT** section appears in the agent detail panel, rendering the agent's last completed message as clean Markdown — headings, lists, tables, code blocks, bold/italic, and links.
 
-- **Deterministic and local** — the Markdown is rendered client-side. No API call, no cost, no latency, and the output is shown verbatim (nothing is summarized, reordered, or rewritten — unlike the spoken [Voice](#voice) summaries).
+- **Deterministic and local** — the Markdown is rendered client-side. No API call, no cost, no latency, and the output is shown verbatim (nothing is summarized, reordered, or rewritten — unlike the spoken [Voice output](#voice-output-spoken-responses) summaries).
 - **Safe** — every character is HTML-escaped before rendering, so raw HTML in an agent's output (e.g. a `<script>` tag) shows as text and never executes.
 - **Expand to a full-screen reader** — the sidebar is narrow, so click the expand (⤢) button in the OUTPUT header, click the preview, or press **`o`** to open the output in a centered popup. Wide tables and long code blocks get room to breathe; press `Esc`, click the backdrop, or hit the ✕ to close. A **Copy** button copies the raw Markdown.
+- **Listen instead of reading** — the reader's **Listen** button speaks the output in its prepared speech form (the same summarized, listenable shape the [Voice output](#voice-output-spoken-responses) feature uses — never the raw Markdown read verbatim). If the summary was already spoken, its recorded text and cached audio are reused, so playback starts instantly with no extra API calls; outputs never spoken are prepared once and then join the history. While playing, the button becomes **Stop**.
+- **Past spoken messages** — the clock button next to Listen lists what was recently spoken for this session; click any entry to hear it again. The last 100 spoken lines (with their full original text) are kept in `state/spoken-history.json` across restarts. An agent's entries are removed when you clean it up, and `POST /api/speak/history/clear` wipes them all.
 
 The last finished output is cached per agent, so it stays readable even after the agent starts its next turn. Everything follows the active theme.
 
@@ -79,9 +84,11 @@ The local render above is deterministic and free. If you want richer structure �
 - **Safety:** the model-generated HTML is rendered inside a sandboxed, opaque-origin `<iframe>` (no scripts, strict CSP) and allowlist-sanitized server-side, so it can never touch the dashboard, your data, or the network. If a call fails, it falls back to the local render.
 - Results are cached per output, so re-opening doesn't spend again. Requires the `claude` CLI or an Anthropic API key; with neither, the button reports that it's unavailable.
 
-## Voice
+## Voice output (spoken responses)
 
-The dashboard can **speak agent responses out loud**, queued one at a time across all your concurrent agents — so you can keep working in another window and just listen as each agent finishes. Everything is configured under **NOTIFY → SPEAK (TTS)**.
+The dashboard can **speak agent responses out loud**, queued one at a time across all your concurrent agents — so you can keep working in another window and just listen as each agent finishes. Everything is configured under **Settings → Voice output** and **Settings → Voice engine**.
+
+This section is about the dashboard *talking to you*. Dictating messages *to* sessions is a separate feature, off by default: see [Voice input](#voice-input-optional-off-by-default).
 
 ### Speaking responses
 
@@ -112,7 +119,7 @@ The dashboard's own summarizer calls are tagged so they never show up as phantom
 ### Voices (local `say` or OpenAI)
 
 - **`say` (default)** — free, local macOS voices. No key. Pick one in the **Voice** dropdown (the dropdown lists the active engine's voices); set the rate too.
-- **OpenAI** — much better voices via `gpt-4o-mini-tts` (calm-narrator tone). Paste your key into the **OpenAI key** field in the SPEAK panel and click **Save key** — it's stored server-side (`state/secrets.json`, git-ignored, never sent back to the browser; only a masked hint is shown). Once set, the engine switches to OpenAI automatically. Configurable via `TTS_OPENAI_VOICE` / `TTS_OPENAI_MODEL`, or `OPENAI_API_KEY` as an env fallback.
+- **OpenAI** — much better voices via `gpt-4o-mini-tts` (calm-narrator tone). Paste your key into the **OpenAI key** field under **Settings → Voice engine** and click **Save key** — it's stored server-side (`state/secrets.json`, git-ignored, never sent back to the browser; only a masked hint is shown). Once set, the engine switches to OpenAI automatically. Configurable via `TTS_OPENAI_VOICE` / `TTS_OPENAI_MODEL`, or `OPENAI_API_KEY` as an env fallback.
 - **Distinct voice per project** — give each project its own voice from the active engine's pool, so you recognize the project by sound.
 
 If an API voice call fails, it falls back to local `say` so speech never breaks.
@@ -130,6 +137,37 @@ brew install nowplaying-cli
 ```
 
 Without it, the toggle no-ops. (macOS has no built-in command to reach the system media controls, which is why the extra tool is required.)
+
+## Voice input (optional, off by default)
+
+Voice input lets you dictate a message to a Claude Code session instead of typing it. **It's off unless you turn it on, and nothing else in the dashboard depends on it.** You don't need an OpenAI key, microphone access or any setup unless you enable it. While it's off, no mic button is shown, the browser never asks for microphone access, and the server never records, transcribes or sends anything.
+
+**What it does when on:** the mic button records your speech in the browser. The audio is sent to OpenAI for transcription (`gpt-4o-transcribe`). The text is then sent to the target session as a real user turn via `claude -p --resume`, exactly as if you'd typed it. If **Speak responses** is on, the reply is then read aloud through the normal voice queue.
+
+**Turning it on:** **Settings → Voice input → Enable voice input (dictate to sessions)**. The switch is stored on the server, so it applies to every open dashboard tab.
+
+**Requirements (only when enabled):** an OpenAI key (the same one as in **Settings → Voice engine**), the `claude` CLI on your `PATH`, and microphone permission in the browser.
+
+> Adding an OpenAI key also switches spoken output from the free macOS `say` voices to paid OpenAI voices. To keep `say`, set `TTS_ENGINE=say`.
+
+**Before you enable it, know that:**
+
+- **It acts as you.** A dictated message is a real prompt. It runs with that session's permission settings, so any tool your allowlist or permission mode allows runs without asking, just as if you'd typed it. Anything that needs an interactive approval is refused (headless `-p` mode), and a session waiting on a permission dialog is never sent a message. A mis-heard or mis-routed message is still executed, so watch the toast that shows the transcript and target.
+- **What leaves your machine.** Your recorded audio goes to OpenAI's transcription API, along with a short hint listing your dashboard project names and alias names. The transcript goes to Claude as a normal message in that session.
+- **Cost.** OpenAI bills each dictation (speech-to-text, per audio minute). The injected turn is a normal Claude Code turn, billed the same way as that session.
+- **When the mic is open.** Only after you click the mic or **Reply**, or, if you turn on *Answer after each reply*, for a few seconds after a reply finishes. The speech queue is held while the mic is open, so it never records the dashboard's own voice.
+- **Local only.** The voice endpoints only accept requests from this machine, with a `localhost`/`127.0.0.1` Host header and no foreign `Origin`. Even with `HOST=0.0.0.0` they aren't reachable from your network, and a web page can't drive them from your browser.
+
+**Where messages go:** say the project name first ("axrange, run the tests"), or use **Reply** in the output reader (needs **Settings → Output → Show agent output in detail panel**). Otherwise the message goes to the session that spoke or finished most recently, within `stickyMinutes` (30 by default). If nothing qualifies, you hear "No target session" and nothing is sent. A busy session gets the message queued and delivered when it finishes.
+
+**Turning it off:** uncheck **Enable voice input**. The mic closes without sending, the mic buttons disappear, and every `/api/voice/*` endpoint except `/api/voice/config` returns 403. Queued messages are discarded, pending status lines are dropped and any hands-free hold is released. A turn that's already running is left to finish. To pause briefly without turning it off, press `v`.
+
+**Optional extras:**
+
+- **Hands-free options** (per browser, both off by default): *Auto-send after silence* sends when you stop talking. *Answer after each reply* opens the mic for a few seconds after a reply finishes.
+- **Spoken confirmation:** *Speak a confirmation before sending* says "Sending your message to X" and waits a few seconds before sending.
+- **Aliases:** copy `state/voice-aliases.example.json` to `state/voice-aliases.json` to map spoken forms to project names, then reload with `POST /api/voice/reload-aliases`.
+- **Terminal out of sync:** an open terminal window doesn't show turns sent by voice. The agent detail panel shows a **VOICE TURNS INJECTED** banner until you reopen the session (`claude --resume`) or dismiss it. If you then type into the stale terminal, the banner changes to **TERMINAL DIVERGED FROM VOICE**.
 
 ## Setup
 
@@ -161,6 +199,32 @@ lsof -ti:3141 -sTCP:LISTEN | xargs kill
 > The `-sTCP:LISTEN` filter matters: it targets only the server process. Without it, `lsof -ti:3141` also matches anything *connected* to the port (like a browser tab open on the dashboard) and would kill those too.
 
 To have it come back after every reboot without thinking about it, either re-run the `nohup` command after login, or use launchd below for a fully hands-off setup.
+
+**Shortcut: an `hq` shell command**
+
+To avoid remembering the commands above, add this function to `~/.zshrc` (or `~/.bashrc`), replacing `/path/to/agents-hq` with the actual project path:
+
+```zsh
+hq() {
+  local dir=/path/to/agents-hq log=/tmp/agents-hq.log port=3141
+  local pid=$(lsof -ti:$port -sTCP:LISTEN)
+  case "$1" in
+    start)
+      [[ -n $pid ]] && { echo "agents-hq already running (pid $pid)"; return; }
+      (cd $dir && nohup npm start > $log 2>&1 &)
+      echo "agents-hq started → http://localhost:$port (logs: $log)" ;;
+    stop)
+      [[ -z $pid ]] && { echo "agents-hq not running"; return; }
+      kill $pid && echo "agents-hq stopped" ;;
+    restart) hq stop; sleep 1; hq start ;;
+    status)  [[ -n $pid ]] && echo "running (pid $pid)" || echo "stopped" ;;
+    logs)    tail -f $log ;;
+    *)       echo "usage: hq start|stop|restart|status|logs" ;;
+  esac
+}
+```
+
+Reload with `source ~/.zshrc`, then use `hq start`, `hq stop`, `hq restart` (after pulling code changes), `hq status`, or `hq logs`. It finds the server by its listening port, so it only ever stops the server process. If you run it under launchd instead, don't use `hq stop` — launchd's `KeepAlive` would just restart it; use `launchctl` as shown below.
 
 **2. Auto-start on login (macOS launchd) — survives reboot, restarts on crash**
 
@@ -200,32 +264,6 @@ launchctl load ~/Library/LaunchAgents/com.agents-hq.server.plist
 ```
 
 This starts the server automatically on login and restarts it if it crashes. To stop:
-**Shortcut: an `hq` shell command**
-
-To avoid remembering the commands above, add this function to `~/.zshrc` (or `~/.bashrc`), replacing `/path/to/agents-hq` with the actual project path:
-
-```zsh
-hq() {
-  local dir=/path/to/agents-hq log=/tmp/agents-hq.log port=3141
-  local pid=$(lsof -ti:$port -sTCP:LISTEN)
-  case "$1" in
-    start)
-      [[ -n $pid ]] && { echo "agents-hq already running (pid $pid)"; return; }
-      (cd $dir && nohup npm start > $log 2>&1 &)
-      echo "agents-hq started → http://localhost:$port (logs: $log)" ;;
-    stop)
-      [[ -z $pid ]] && { echo "agents-hq not running"; return; }
-      kill $pid && echo "agents-hq stopped" ;;
-    restart) hq stop; sleep 1; hq start ;;
-    status)  [[ -n $pid ]] && echo "running (pid $pid)" || echo "stopped" ;;
-    logs)    tail -f $log ;;
-    *)       echo "usage: hq start|stop|restart|status|logs" ;;
-  esac
-}
-```
-
-Reload with `source ~/.zshrc`, then use `hq start`, `hq stop`, `hq restart` (after pulling code changes), `hq status`, or `hq logs`. It finds the server by its listening port, so it only ever stops the server process. If you run it under launchd instead, don't use `hq stop` — launchd's `KeepAlive` would just restart it; use `launchctl` as shown below.
-
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.agents-hq.server.plist
@@ -421,6 +459,20 @@ POST /api/speak/pause               # pause playback (hold queue)
 POST /api/speak/resume              # resume playback
 POST /api/speak/stop                # clear the queue and stop
 POST /api/speak/remove              # remove one queued item by id
+POST /api/speak/replay              # replay a past spoken message
+GET  /api/speak/history             # recently spoken messages (?agentId=, ?limit=)
+GET  /api/speak/history/entry       # one history entry (?id=)
+POST /api/speak/history/clear       # delete all spoken history
+
+# Voice input (optional; localhost only; 403 while disabled except /config)
+GET  /api/voice/config              # voice settings (incl. the enabled switch)
+POST /api/voice/config              # update settings / turn voice on or off
+GET  /api/voice/state               # routing records, in-flight injections, queue
+POST /api/voice/utterance           # audio/* body or JSON {text}; ?frozen=<agentId> pins the target
+POST /api/voice/hold                # hold/release the speech queue while the mic is open
+POST /api/voice/autoreply           # arm/disarm the hands-free reply window
+POST /api/voice/reload-aliases      # re-read state/voice-aliases.json
+POST /api/agent/:id/voice-stale-dismiss  # clear the "voice turns injected" banner (not gated; only clears the flag)
 ```
 
 POST body for status updates:
@@ -439,7 +491,7 @@ POST body for status updates:
 
 Status values: `active`, `idle`, `offline`.
 
-WebSocket message types: `init`, `update`, `config_update`, `agent_message`, `message_history`, `subagent_tools`, `tts` (voice queue state).
+WebSocket message types: `init`, `update`, `config_update`, `agent_message`, `message_history`, `subagent_tools`, `tts` (voice queue state), `voice` (voice input state), `voiceReplyDone` (a reply finished playing).
 
 ## Environment variables
 
@@ -449,13 +501,14 @@ WebSocket message types: `init`, `update`, `config_update`, `agent_message`, `me
 | `HOST` | `127.0.0.1` | Bind address. Loopback by default so the dashboard and voice endpoints aren't reachable from the LAN — set `0.0.0.0` to expose deliberately. |
 | `AGENTS_HQ_URL` | `http://localhost:3141` | Where hooks POST to (set if the dashboard isn't on localhost) |
 | `TTS_ENGINE` | auto | Voice engine: `say` or `openai`. Auto-picks `openai` when an OpenAI key is set, else `say`. |
-| `OPENAI_API_KEY` | — | OpenAI voice key (env fallback; the UI field is preferred and takes precedence) |
+| `OPENAI_API_KEY` | — | OpenAI key for OpenAI voices and, if enabled, voice-input transcription (env fallback; the UI field takes precedence) |
 | `TTS_OPENAI_VOICE` | `nova` | OpenAI voice (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer) |
 | `TTS_OPENAI_MODEL` | `gpt-4o-mini-tts` | OpenAI TTS model |
 | `TTS_OPENAI_INSTRUCTIONS` | calm-narrator preset | Tone instructions for `gpt-4o-mini-tts` |
 | `TTS_SUMMARIZER` | auto | Summary backend: `cli`, `api`, or `heuristic`. Auto: `api` if Anthropic key, else `cli` if `claude` installed, else `heuristic`. |
 | `TTS_SUMMARY_MODEL` | `sonnet` (cli) / `claude-haiku-4-5` (api) | Model for the summary rewrite |
 | `ANTHROPIC_API_KEY` | — | Enables the API summary backend |
+| `VOICE_STT_MODEL` | `gpt-4o-transcribe` | Speech-to-text model for voice input (only used when voice input is on) |
 
 ## Themes
 
@@ -475,12 +528,17 @@ Projects come from `cwd` (last directory segment). Same agent type gets the same
 
 ```
 server.js              Express + WebSocket server, file watcher, heartbeat sweep
+voice.js               Optional voice input (off by default): transcription, routing, session injection
 public/
   index.html           Dashboard shell
   app.js               Views, 3D engine, sparklines, interaction handlers
   style.css            Themes and layout
 state/
   agents/              Runtime state files (one JSON per agent)
+  voice-settings.json  Voice input settings, incl. the off switch (gitignored, created on first run)
+  voice-queue.json     Voice input: messages queued for busy sessions (gitignored)
+  voice-aliases.json   Voice input, optional: spoken-name → project map (gitignored; see the .example file)
+  spoken-history.json  Last 100 spoken messages (gitignored)
 scripts/
   simulate.js          Random activity simulator
   test-hooks.sh        Multi-agent session test

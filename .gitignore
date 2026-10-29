@@ -2,5 +2,9 @@ node_modules/
 state/agents/*.json
 state/activity-log.json
 state/secrets.json
+state/voice-aliases.json
+state/voice-settings.json
+state/voice-queue.json
+state/spoken-history.json
 .idea/
 .DS_Store

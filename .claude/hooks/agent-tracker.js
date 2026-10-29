@@ -161,9 +161,17 @@ process.stdin.on('end', () => {
 
   if (!agentId) process.exit(0);
 
+  // Voice-bridge origin marker: a turn spawned by the dashboard's injector runs
+  // with AGENTS_HQ_VOICE_TURN=1 in its env (mirrors the AGENTS_HQ_NO_TRACK
+  // pattern above). This is the reliable injected-vs-terminal discriminator the
+  // TUI-stale badge consumes.
+  const voiceTurn = process.env.AGENTS_HQ_VOICE_TURN === '1';
+
   const safeId = encodeURIComponent(agentId);
 
   function sendBody(body) {
+    // Attach the voice-origin marker (voice-injected turns only).
+    if (voiceTurn) body.voiceTurn = true;
     const url = new URL(`/api/agent/${safeId}/status`, DASHBOARD_URL);
     const payload = JSON.stringify(body);
     const req = http.request(url, {

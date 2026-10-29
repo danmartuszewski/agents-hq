@@ -641,7 +641,29 @@ document.getElementById('agent-detail-output')?.addEventListener('click', () => 
 document.getElementById('output-modal-close')?.addEventListener('click', (e) => { e.stopPropagation(); closeOutputPopup(); });
 document.getElementById('output-modal-copy')?.addEventListener('click', (e) => { e.stopPropagation(); copyOutputToClipboard(); });
 document.getElementById('output-modal-enhance')?.addEventListener('click', (e) => { e.stopPropagation(); enhanceOutput(); });
-document.getElementById('output-modal')?.addEventListener('click', (e) => { if (e.target.id === 'output-modal') closeOutputPopup(); });
+document.getElementById('output-modal-listen')?.addEventListener('click', (e) => { e.stopPropagation(); listenToOutput(); });
+document.getElementById('output-modal-history')?.addEventListener('click', (e) => { e.stopPropagation(); toggleHistoryMenu(); });
+document.getElementById('output-history-menu')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  // The play icon replays the audio; clicking anywhere else on the row shows
+  // the message inline in the popup body.
+  const play = e.target.closest('.output-history-play');
+  if (play) {
+    fetch('/api/speak/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ historyId: play.dataset.playId })
+    }).catch(() => {});
+    closeHistoryMenu();
+    return;
+  }
+  const row = e.target.closest('.output-history-item');
+  if (row) viewHistoryEntry(row.dataset.id);
+});
+document.getElementById('output-modal')?.addEventListener('click', (e) => {
+  if (historyMenuOpen) closeHistoryMenu();
+  if (e.target.id === 'output-modal') closeOutputPopup();
+});
 
 document.querySelectorAll('.notify-check-option').forEach(opt => {
   opt.addEventListener('click', (e) => {
@@ -2759,8 +2781,21 @@ function renderAgentDetail() {
   } else if ((ttsState.queue || []).some(i => i.agentId === selectedAgentId)) {
     speakSection = `<div class="detail-speak-banner queued">${SVG_SPEAKER_SM} Queued for speech</div>`;
   }
+  // Voice-stale badge: a voice-injected turn landed that this session's still-open
+  // TUI never saw. Escalated = the human then typed into that stale TUI.
+  let voiceStaleSection = '';
+  if (state.voiceStale) {
+    voiceStaleSection = `<div class="detail-attn-banner voice-stale${state.voiceStaleEscalated ? ' escalated' : ''}">
+         <div class="detail-attn-title">${SVG_WARN_SM} ${state.voiceStaleEscalated ? 'TERMINAL DIVERGED FROM VOICE' : 'VOICE TURNS INJECTED'}</div>
+         <div class="detail-attn-msg">${state.voiceStaleEscalated
+           ? 'This session was typed into after voice turns were injected — the terminal may not have seen them. Reopen it (<code>claude --resume</code>) to sync.'
+           : 'Voice messages were injected here; the open terminal window does not show them until reopened.'}</div>
+         <button class="voice-stale-dismiss" data-agent-id="${esc(selectedAgentId)}">Dismiss</button>
+       </div>`;
+  }
   document.getElementById('agent-detail-status').innerHTML = `
     ${attnSection}
+    ${voiceStaleSection}
     ${speakSection}
     <div class="detail-status-grid">
       <div class="detail-stat">
@@ -2853,6 +2888,21 @@ function renderAgentDetailOutput() {
 // WebSocket re-render can't reset the reader's scroll position or selection.
 let outputPopupSnapshot = '';        // raw markdown currently displayed
 let outputPopupTrigger = null;       // element to restore focus to on close
+let outputPopupAgentId = null;       // the agent whose output is shown (voice-reply target)
+let outputPopupHistoryView = null;   // history entry being viewed inline, or null = latest output
+
+// Render markdown text into the popup body, optionally with a banner above it
+// (used by both the latest output and the past-message viewer).
+function renderPopupText(text, bannerHtml) {
+  const MAX = 200000;   // length guard: a pathologically large message would jank the main thread
+  const shown = text.length > MAX ? text.slice(0, MAX) : text;
+  const truncNote = text.length > MAX ? '<div class="detail-no-logs">Output truncated for display.</div>' : '';
+  const bodyEl = document.getElementById('output-modal-body');
+  if (!bodyEl) return;
+  bodyEl.style.display = ''; bodyEl.style.flexDirection = ''; bodyEl.style.overflow = '';
+  bodyEl.innerHTML = `${bannerHtml || ''}<div class="detail-output">${renderMarkdown(shown)}${truncNote}</div>`;
+  bodyEl.scrollTop = 0;
+}
 function outputPopupOpen() {
   return document.getElementById('output-modal')?.classList.contains('open');
 }
@@ -2875,22 +2925,23 @@ function openOutputPopup() {
   document.getElementById('output-modal-title').textContent = name.toUpperCase();
   document.getElementById('output-modal-sub').innerHTML = parts.join(' · ');
 
-  // Length guard: a pathologically large message would jank the main thread.
-  const MAX = 200000;
   outputPopupSnapshot = text;
-  const shown = text.length > MAX ? text.slice(0, MAX) : text;
-  const truncNote = text.length > MAX ? '<div class="detail-no-logs">Output truncated for display.</div>' : '';
-  const bodyEl = document.getElementById('output-modal-body');
-  bodyEl.style.display = ''; bodyEl.style.flexDirection = ''; bodyEl.style.overflow = '';
-  bodyEl.innerHTML = `<div class="detail-output">${renderMarkdown(shown)}${truncNote}</div>`;
+  outputPopupHistoryView = null;
+  renderPopupText(text);
 
   // Reset the AI-formatted view; show the opt-in Enhance button only when enabled.
   aiViewActive = false; currentAiHtml = '';
   const enhBtn = document.getElementById('output-modal-enhance');
-  if (enhBtn) { enhBtn.style.display = formatFlags.ai ? '' : 'none'; enhBtn.textContent = '✨ Enhance'; enhBtn.disabled = false; }
+  if (enhBtn) { enhBtn.style.display = formatFlags.ai ? '' : 'none'; setEnhanceBtn('Enhance', false); }
+
+  // Voice reply mic: dictate an answer straight to THIS session (frozen target).
+  outputPopupAgentId = selectedAgentId;
+  updatePopupMicState();
+  closeHistoryMenu();
 
   outputPopupTrigger = (document.activeElement && document.activeElement.isConnected) ? document.activeElement : null;
   modal.classList.add('open');
+  updateListenBtnState();   // after .open — its guard is a no-op while the modal is closed
   document.getElementById('output-modal-body').scrollTop = 0;
   const closeBtn = document.getElementById('output-modal-close');
   if (closeBtn) closeBtn.focus();
@@ -2898,6 +2949,13 @@ function openOutputPopup() {
 function closeOutputPopup() {
   const modal = document.getElementById('output-modal');
   if (!modal || !modal.classList.contains('open')) return;
+  // Cancel an in-progress voice reply that targeted this popup's session.
+  if ((voiceRecording || voiceStarting) && !voiceWindowMode && voiceFrozenAgentId && voiceFrozenAgentId === outputPopupAgentId) {
+    cancelVoiceRecording();
+  }
+  closeHistoryMenu();
+  outputPopupAgentId = null;
+  outputPopupHistoryView = null;
   modal.classList.remove('open');
   const t = outputPopupTrigger;
   outputPopupTrigger = null;
@@ -2906,7 +2964,12 @@ function closeOutputPopup() {
 }
 function copyOutputToClipboard() {
   const btn = document.getElementById('output-modal-copy');
-  const done = () => { if (btn) { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1200); } };
+  const setCopyLabel = (t) => {
+    if (!btn) return;
+    const lbl = btn.querySelector('.output-modal-copy-label');
+    if (lbl) lbl.textContent = t; else btn.textContent = t;   // keep the icon
+  };
+  const done = () => { setCopyLabel('Copied'); setTimeout(() => setCopyLabel('Copy'), 1200); };
   // Synchronous fallback for when the async Clipboard API is unavailable or
   // rejects (e.g. the tab isn't focused).
   const fallback = () => {
@@ -2926,6 +2989,159 @@ function copyOutputToClipboard() {
   } else {
     fallback();
   }
+}
+
+// ---- Listen: hear this output in its prepared speech form. The server keeps a
+// spoken history (final summary text + rendered-audio cache key), so replaying
+// what was already spoken costs nothing; outputs never spoken yet go through
+// the normal summarize→render path once and join the history.
+function listenTargetState() {
+  const id = outputPopupAgentId;
+  if (!id) return 'idle';
+  // Voice-system lines (confirmations / errors) for this agent don't count:
+  // "Stop" must never skip a protected confirmation, and a queued confirmation
+  // must not dead-block the Listen click.
+  const ours = (i) => i && i.agentId === id && !i.voiceSystem;
+  if (ours(ttsState.current)) return 'playing';
+  if ((ttsState.queue || []).some(ours)) return 'queued';
+  return 'idle';
+}
+function updateListenBtnState() {
+  const btn = document.getElementById('output-modal-listen');
+  if (!btn || !outputPopupOpen()) return;
+  const lbl = btn.querySelector('.output-modal-listen-label');
+  const st = listenTargetState();
+  btn.classList.toggle('listening', st === 'playing');
+  if (lbl) lbl.textContent = st === 'playing' ? 'Stop' : st === 'queued' ? 'Queued…' : 'Listen';
+}
+let listenRequestInFlight = false;
+async function listenToOutput() {
+  const agentId = outputPopupAgentId;
+  if (!agentId || listenRequestInFlight) return;
+  const st = listenTargetState();
+  if (st === 'playing') { skipCurrentSpeech(); return; }   // Listen acts as Stop while playing
+  if (st === 'queued') return;
+  // Viewing a past message inline → Listen plays exactly THAT entry.
+  if (outputPopupHistoryView) {
+    fetch('/api/speak/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ historyId: outputPopupHistoryView.id })
+    }).catch(() => {});
+    return;
+  }
+  listenRequestInFlight = true;
+  let replayed = false;
+  try {
+    // rawText lets the server verify the newest history entry was spoken from
+    // THIS output — a muted/stopped/dropped turn has no entry while an older
+    // one does, and replaying that would be silently wrong.
+    const r = await fetch('/api/speak/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId, rawText: outputPopupSnapshot.slice(0, 6000) })
+    });
+    const j = await r.json();
+    replayed = !!(j && j.ok);
+  } catch {}
+  if (!replayed) {
+    // This output was never spoken — prepare it now. 'listen' kind: jumps the
+    // queue, protected from drops, no auto reply-window; force overrides mute.
+    const agent = getAgentById(agentId);
+    enqueueSpeech(agentId, agent ? getDisplayName(agent) : '', outputPopupSnapshot, 'listen', true);
+  }
+  listenRequestInFlight = false;
+  updateListenBtnState();
+}
+
+// ---- Past spoken messages dropdown (server-side history, replay on click) ----
+let historyMenuOpen = false;
+function closeHistoryMenu() {
+  const menu = document.getElementById('output-history-menu');
+  if (menu) menu.style.display = 'none';
+  document.getElementById('output-modal-history')?.setAttribute('aria-expanded', 'false');
+  historyMenuOpen = false;
+}
+async function toggleHistoryMenu() {
+  const menu = document.getElementById('output-history-menu');
+  if (!menu || !outputPopupAgentId) return;
+  if (historyMenuOpen) { closeHistoryMenu(); return; }
+  const forAgent = outputPopupAgentId;   // guard against a stale response after reopen
+  const head = '<div class="output-history-head">Past spoken messages — click to replay</div>';
+  menu.innerHTML = head + '<div class="output-history-empty">Loading…</div>';
+  menu.style.display = '';
+  historyMenuOpen = true;
+  document.getElementById('output-modal-history')?.setAttribute('aria-expanded', 'true');
+  let entries = [];
+  try {
+    const r = await fetch(`/api/speak/history?agentId=${encodeURIComponent(forAgent)}&limit=15`);
+    const j = await r.json();
+    entries = (j && Array.isArray(j.entries)) ? j.entries : [];
+  } catch {}
+  if (!historyMenuOpen || outputPopupAgentId !== forAgent) return;   // closed or reopened for another agent
+  if (!entries.length) {
+    menu.innerHTML = head + '<div class="output-history-empty">Nothing spoken for this session yet.</div>';
+    return;
+  }
+  const now = new Date();
+  menu.innerHTML = head + entries.map(e => {
+    const d = new Date(e.at);
+    const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const t = d.toDateString() === now.toDateString()
+      ? hm
+      : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${hm}`;
+    return `<button type="button" class="output-history-item" data-id="${esc(e.id)}" role="menuitem" title="View this message">` +
+      `<span class="output-history-time">${esc(t)}</span>` +
+      `<span class="output-history-preview">${esc(e.preview || '')}</span>` +
+      `<span class="output-history-play" data-play-id="${esc(e.id)}" title="Play again" role="button">` +
+      `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg></span></button>`;
+  }).join('');
+}
+
+// ---- Inline past-message viewer: swap the popup body to a history entry ----
+function historyBannerHtml(entry) {
+  const d = new Date(entry.at);
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const when = d.toDateString() === new Date().toDateString()
+    ? hm : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${hm}`;
+  const summaryNote = !entry.rawText ? ' <span class="output-history-banner-note">(spoken summary — full text not recorded)</span>' : '';
+  return `<div class="output-history-banner">` +
+    `<span class="output-history-banner-label">Past message · spoken ${esc(when)}${summaryNote}</span>` +
+    `<button type="button" id="output-history-back" class="output-history-back">◂ Back to latest</button></div>`;
+}
+
+async function viewHistoryEntry(id) {
+  const forAgent = outputPopupAgentId;
+  let entry = null;
+  try {
+    const r = await fetch(`/api/speak/history/entry?id=${encodeURIComponent(id)}`);
+    const j = await r.json();
+    if (j && j.ok) entry = j.entry;
+  } catch {}
+  if (!entry || !outputPopupOpen() || outputPopupAgentId !== forAgent) return;
+  closeHistoryMenu();
+  outputPopupHistoryView = entry;
+  aiViewActive = false; currentAiHtml = '';
+  const text = entry.rawText || entry.speakText || '';
+  outputPopupSnapshot = text;   // Copy / Listen now act on what's displayed
+  renderPopupText(text, historyBannerHtml(entry));
+  // Enhance reformats the LIVE output — hide it while a past message is shown.
+  const enhBtn = document.getElementById('output-modal-enhance');
+  if (enhBtn) enhBtn.style.display = 'none';
+  document.getElementById('output-history-back')?.addEventListener('click', (e) => {
+    e.stopPropagation(); restoreLatestOutputView();
+  });
+  updateListenBtnState();
+}
+
+function restoreLatestOutputView() {
+  outputPopupHistoryView = null;
+  const text = outputPopupAgentId ? (outputTextFor(outputPopupAgentId) || '') : '';
+  outputPopupSnapshot = text;
+  renderPopupText(text);
+  const enhBtn = document.getElementById('output-modal-enhance');
+  if (enhBtn) { enhBtn.style.display = formatFlags.ai ? '' : 'none'; setEnhanceBtn('Enhance', false); }
+  updateListenBtnState();
 }
 
 // ---- Optional AI-formatted view (opt-in, on-demand) ----
@@ -2967,7 +3183,11 @@ function buildAiSrcdoc(modelHtml) {
 }
 function setEnhanceBtn(label, disabled) {
   const b = document.getElementById('output-modal-enhance');
-  if (b) { b.textContent = label; b.disabled = !!disabled; }
+  if (!b) return;
+  const lbl = b.querySelector('.output-modal-enhance-label');
+  if (lbl) lbl.textContent = label;   // keep the icon, swap only the label
+  else b.textContent = label;
+  b.disabled = !!disabled;
 }
 function renderAiView(modelHtml) {
   const body = document.getElementById('output-modal-body');
@@ -2998,7 +3218,7 @@ function renderOriginalView() {
   body.style.flexDirection = '';
   body.style.overflow = '';
   body.innerHTML = `<div class="detail-output">${renderMarkdown(outputPopupSnapshot)}</div>`;
-  setEnhanceBtn('✨ Enhance', false);
+  setEnhanceBtn('Enhance', false);
 }
 function refreshAiFrame() {
   if (!aiViewActive || !outputPopupOpen()) return;
@@ -3035,7 +3255,7 @@ async function enhanceOutput() {
     aiCacheByText.set(text, data.html);
     renderAiView(data.html);
   } else {
-    setEnhanceBtn('✨ Enhance', false);
+    setEnhanceBtn('Enhance', false);
     showEnhanceError(data && data.error);
   }
 }
@@ -3456,14 +3676,15 @@ function enqueueSpeech(agentId, name, text, kind, force) {
     text: `${lead}${speech}`,                   // verbatim fallback
     rawText: String(text || ''),                // raw message, for the listenable summary
     lead,
-    summarize: kind === 'response' && !!ttsFlags.summarize,
+    summarize: (kind === 'response' || kind === 'listen') && !!ttsFlags.summarize,
     pauseOtherMedia: !!ttsFlags.pauseMedia,
     voice,
     rate: Math.round(TTS_BASE_WPM * ttsRate),
     label,
     preview: speech.slice(0, 140),
     agentId: agentId || '',
-    priority: kind === 'attention'   // attention asks jump the queue
+    priority: kind === 'attention',  // attention asks jump the queue
+    listen: kind === 'listen'        // click-initiated Listen: priority + drop-protected, no auto reply-window
   };
   fetch('/api/speak', {
     method: 'POST',
@@ -3891,6 +4112,623 @@ function syncAudioPlayback() {
   }
 })();
 
+// ============================================================
+// Voice input (Phase 1) — click-to-talk loop.
+//
+// Mic button → on-demand getUserMedia → MediaRecorder → raw-body upload to
+// POST /api/voice/utterance. The server transcribes, routes, and injects into
+// the session that just spoke; the reply comes back through the existing TTS
+// pipeline. Earcons are played via WebAudio (unlocked by the click gesture).
+// AirPods stem-gesture arming is Phase 2; this is the mouse-driven MVP.
+// ============================================================
+let voiceConfig = { enabled: false, wakePhrase: 'HQ' };
+let voiceRuntime = { injecting: [], pending: [] };
+// Per-user comfort prefs (localStorage, not the server switch). Auto-send is a
+// hands-free convenience some people want and others don't — default OFF, so the
+// baseline is deterministic click-to-send.
+let voiceAutoSend = localStorage.getItem('agents-hq-voice-autosend') === 'on';   // default OFF
+let voiceSilenceSec = (() => { const v = parseFloat(localStorage.getItem('agents-hq-voice-silence-sec')); return isNaN(v) ? 5 : v; })();
+// Reply-window ("answer after each reply") — hands-free conversational turn: when
+// a reply finishes playing, the mic auto-opens for a bounded window; if you speak
+// it routes back to that same session. No trigger word. Per-user, default OFF.
+let voiceAutoReply = localStorage.getItem('agents-hq-voice-autoreply') === 'on';   // default OFF
+// Quick mic pause ("someone walked in"): one header button / `v` suspends ALL
+// voice capture — cancels an open mic, keeps reply windows from opening — while
+// leaving spoken OUTPUT untouched. Persisted so it survives a reload.
+let voicePaused = localStorage.getItem('agents-hq-voice-paused') === 'on';
+// Default 6s: every unanswered window holds the whole TTS queue for its full
+// duration, so with several busy sessions a long window makes listening sluggish.
+let voiceReplyWindowSec = (() => { const v = parseFloat(localStorage.getItem('agents-hq-voice-reply-window-sec')); return isNaN(v) ? 6 : v; })();
+const VOICE_MAX_RECORD_MS = 60000;
+const VOICE_REPLY_ENDPOINT_MS = 2000;   // conversational trailing-silence for the reply window
+function saveVoicePrefs() {
+  localStorage.setItem('agents-hq-voice-autosend', voiceAutoSend ? 'on' : 'off');
+  localStorage.setItem('agents-hq-voice-silence-sec', String(voiceSilenceSec));
+  localStorage.setItem('agents-hq-voice-autoreply', voiceAutoReply ? 'on' : 'off');
+  localStorage.setItem('agents-hq-voice-reply-window-sec', String(voiceReplyWindowSec));
+}
+let voiceRecorder = null, voiceChunks = [], voiceStream = null, voiceRecStart = 0;
+let voiceRecording = false;
+let voiceStarting = false;       // getUserMedia in flight (guards double-start races)
+let voiceTranscribing = false;   // capture closed, STT round-trip in flight
+// Reply-window session state
+let voiceFrozenAgentId = null;   // route this dictation back to this agent
+let voiceWindowMode = false;     // onset-bounded (auto-listen) vs manual mic
+let voiceWindowMs = 0;           // how long to wait for speech onset before closing
+let voiceHeldTts = false;        // we asked the server to hold TTS while listening
+const VOICE_MIN_MS = 400;   // shorter than this = accidental press, discarded
+
+// --- Client VAD (endpointing): auto-stop after trailing silence -------------
+// WebAudio energy analysis on the mic stream. We calibrate an ambient floor for
+// the first ~300 ms, wait for speech onset, then auto-send once the level stays
+// quiet for `voiceSilenceSec`. Manual click-to-send stays as the override.
+// Gated by the `voiceAutoSend` pref (default off) — plain click-to-send otherwise.
+let voiceVadTimer = null, voiceVadSource = null, voiceVadAnalyser = null;
+let voiceSpeechSeen = false, voiceLastLoudAt = 0, voiceVadFloor = 0, voiceVadCalibN = 0;
+
+function startVad() {
+  // Two modes:
+  //  - reply window (voiceWindowMode): always runs; bounds speech ONSET only — if
+  //    nothing is said within the window it closes with no send; once you start
+  //    talking it records to natural end (endpoint on ~2 s silence).
+  //  - manual mic auto-send (voiceAutoSend pref): endpoints on `voiceSilenceSec`.
+  if (!voiceWindowMode && !voiceAutoSend) return;
+  const silenceMs = voiceWindowMode ? VOICE_REPLY_ENDPOINT_MS : Math.max(1000, (voiceSilenceSec || 5) * 1000);
+  const onsetDeadline = voiceWindowMode ? (voiceRecStart + Math.max(3000, voiceWindowMs)) : Infinity;
+  try {
+    if (!voiceAudioCtx) voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (voiceAudioCtx.state === 'suspended') voiceAudioCtx.resume();
+    voiceVadSource = voiceAudioCtx.createMediaStreamSource(voiceStream);
+    voiceVadAnalyser = voiceAudioCtx.createAnalyser();
+    voiceVadAnalyser.fftSize = 1024;
+    voiceVadSource.connect(voiceVadAnalyser);   // read-only tap; NOT connected to output
+    voiceSpeechSeen = false; voiceLastLoudAt = 0; voiceVadFloor = 0; voiceVadCalibN = 0;
+    const buf = new Float32Array(voiceVadAnalyser.fftSize);
+    const maxMs = VOICE_MAX_RECORD_MS;
+    voiceVadTimer = setInterval(() => {
+      if (!voiceRecording || !voiceVadAnalyser) return;
+      voiceVadAnalyser.getFloatTimeDomainData(buf);
+      let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+      const rms = Math.sqrt(sum / buf.length);
+      const now = performance.now();
+      const elapsed = now - voiceRecStart;
+      if (elapsed < 300) { voiceVadFloor += rms; voiceVadCalibN++; return; }   // calibrate ambient
+      const ambient = voiceVadCalibN ? voiceVadFloor / voiceVadCalibN : 0.005;
+      const threshold = Math.max(ambient * 2.5, 0.012);
+      if (rms > threshold) {
+        if (!voiceSpeechSeen) { voiceSpeechSeen = true; setMicButtonState(); }   // refresh labels on speech onset
+        voiceLastLoudAt = now;
+      }
+      // Reply window: no speech by the onset deadline → close, send nothing.
+      if (!voiceSpeechSeen && now > onsetDeadline) {
+        stopVad();
+        cancelVoiceRecording(true);                // silent close (soft cue)
+        return;
+      }
+      if (elapsed > maxMs) {                       // hard cap
+        stopVad();
+        if (voiceSpeechSeen) stopVoiceRecording(); else cancelVoiceRecording(true);
+        return;
+      }
+      if (voiceSpeechSeen && (now - voiceLastLoudAt) > silenceMs) {  // trailing-silence endpoint
+        stopVad();
+        stopVoiceRecording();                      // → onstop → finish → send
+      }
+    }, 60);
+  } catch {}
+}
+
+function stopVad() {
+  if (voiceVadTimer) { clearInterval(voiceVadTimer); voiceVadTimer = null; }
+  try { if (voiceVadSource) voiceVadSource.disconnect(); } catch {}
+  voiceVadSource = null; voiceVadAnalyser = null;
+}
+
+// --- WebAudio earcons (short tones; no dependency on the #tts-audio element) ---
+let voiceAudioCtx = null;
+function voiceEarcon(kind) {
+  try {
+    if (!voiceAudioCtx) voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (voiceAudioCtx.state === 'suspended') voiceAudioCtx.resume();
+    const ctx = voiceAudioCtx;
+    const now = ctx.currentTime;
+    const tones = {
+      listening: [[660, 0], [880, 0.09]],
+      captured:  [[740, 0]],                          // mic closed, transcribing
+      sent:      [[880, 0], [1100, 0.07], [1320, 0.14]],  // rising triad — clearly distinct from 'listening'
+      cancelled: [[520, 0], [380, 0.1]],
+      tooShort:  [[400, 0]],
+      error:     [[300, 0], [220, 0.12]]
+    }[kind] || [[660, 0]];
+    for (const [freq, t] of tones) {
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.frequency.value = freq; osc.type = 'sine';
+      gain.gain.setValueAtTime(0.0001, now + t);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + t + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + t + 0.14);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(now + t); osc.stop(now + t + 0.16);
+    }
+  } catch {}
+}
+
+function setMicButtonState() {
+  const btn = document.getElementById('voice-mic-btn');
+  if (btn) {
+    btn.style.display = voiceConfig.enabled ? '' : 'none';
+    btn.classList.toggle('recording', voiceRecording);
+    btn.classList.toggle('transcribing', !voiceRecording && voiceTranscribing);
+    btn.title = voiceRecording
+      ? (voiceWindowMode ? 'Listening for your answer — speak, or click to cancel'
+         : voiceAutoSend ? `Recording — auto-sends after ${voiceSilenceSec}s silence, or click to send now`
+         : 'Recording — click to send')
+      : voiceTranscribing ? 'Transcribing…'
+      : 'Voice input — click to dictate';
+  }
+  setVoicePauseBtnState();
+  updatePopupMicState();
+}
+
+// ---- Quick mic pause: one press stops all listening (someone walked in) -----
+const SVG_VOICE_LISTEN = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
+// Identical glyph to the header dictate mic (filled capsule + stand + base bar),
+// plus the slash — same family, clearly the "off" variant of the same control.
+const SVG_VOICE_LISTEN_OFF = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="11" rx="3" fill="currentColor" stroke="none"/><path d="M6 11a6 6 0 0 0 12 0"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8.5" y1="21" x2="15.5" y2="21"/><line x1="3" y1="3" x2="21" y2="21"/></svg>';
+function setVoicePauseBtnState() {
+  const b = document.getElementById('voice-pause-btn');
+  if (!b) return;
+  b.style.display = voiceConfig.enabled ? '' : 'none';
+  b.classList.toggle('paused', voicePaused);
+  // Always the crossed-out mic: the button IS the "mic off" toggle, so its icon
+  // never changes — only its color does (blue = available, red = engaged).
+  // Swapping between two mic glyphs also made it read as a second dictate button.
+  b.innerHTML = SVG_VOICE_LISTEN_OFF;
+  b.title = voicePaused
+    ? 'Voice input paused — nothing is listening. Click to resume (v)'
+    : 'Pause voice input (v)';
+}
+function toggleVoicePause() {
+  if (!voiceConfig.enabled) return;
+  voicePaused = !voicePaused;
+  localStorage.setItem('agents-hq-voice-paused', voicePaused ? 'on' : 'off');
+  // Panic semantics: anything currently being captured is discarded unsent —
+  // including a manual dictation — so one press guarantees silence to the model.
+  if (voicePaused && (voiceRecording || voiceStarting)) cancelVoiceRecording();
+  registerAutoReply();   // disarm/rearm the server's instant TTS hold
+  setMicButtonState();
+  voiceToast(voicePaused ? 'Voice input paused — mic stays off' : 'Voice input resumed');
+}
+// Keep other open tabs consistent: pausing here pauses everywhere (the leader
+// tab owns the mic, but the toggle may be clicked in any tab).
+window.addEventListener('storage', (e) => {
+  if (e.key !== 'agents-hq-voice-paused') return;
+  const paused = e.newValue === 'on';
+  if (paused === voicePaused) return;
+  voicePaused = paused;
+  if (voicePaused && (voiceRecording || voiceStarting)) cancelVoiceRecording();
+  registerAutoReply();
+  setMicButtonState();
+});
+
+// The output-popup mic reflects recording only when THIS agent is the target.
+function updatePopupMicState() {
+  const mic = document.getElementById('output-modal-mic');
+  if (!mic) return;
+  mic.style.display = voiceConfig.enabled ? '' : 'none';
+  const activeForThis = voiceRecording && voiceFrozenAgentId && voiceFrozenAgentId === outputPopupAgentId;
+  mic.classList.toggle('recording', activeForThis);
+  const label = mic.querySelector('.output-modal-mic-label');
+  if (label) label.textContent = activeForThis ? (voiceSpeechSeen || !voiceAutoSend ? 'Send' : 'Listening…') : 'Reply';
+  mic.title = activeForThis ? 'Click to send your dictated reply' : 'Dictate a reply to this session';
+}
+
+// Dictate a reply routed to exactly the agent whose output is open (frozen).
+function toggleReplyToAgent(agentId) {
+  if (!voiceConfig.enabled || !agentId) return;
+  if (voiceRecording) {
+    // Recording already in progress: if it's this popup's dictation, send it;
+    // if some other capture is running, ignore (one mic at a time).
+    if (voiceFrozenAgentId === agentId && !voiceWindowMode) stopVoiceRecording();
+    return;
+  }
+  startVoiceRecording({ frozen: agentId });   // manual: click again (or auto-send) to send
+}
+
+// Each start gets a generation number; cancel bumps it. Every async step (the
+// barge-in hold, the mic-permission prompt, the recorder's own events) checks
+// its generation, so a cancelled capture can never prompt, record, or upload.
+let voiceGen = 0;
+function voiceStartStale(gen) { return gen !== voiceGen || !voiceConfig.enabled; }
+
+async function startVoiceRecording(opts = {}) {
+  if (voiceRecording || voiceStarting) return;
+  const gen = ++voiceGen;
+  voiceStarting = true;
+  voiceFrozenAgentId = opts.frozen || null;
+  voiceWindowMode = !!opts.windowMode;
+  voiceWindowMs = opts.windowMs || 0;
+  // Barge-in: a mic press while a reply is speaking pauses + skips it — you
+  // shouldn't have to sit through a long summary to answer. Hold FIRST (awaited)
+  // so the skip's queue-advance can't start the next item into the open mic.
+  if (ttsState.speaking && !ttsState.paused && !opts.windowMode) {
+    const a = document.getElementById('tts-audio');
+    if (a && !a.paused) { try { a.pause(); } catch {} }   // instant local silence
+    if (!voiceHeldTts) {
+      voiceHeldTts = true;
+      try {
+        await fetch('/api/voice/hold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hold: true }) });
+      } catch {}
+    }
+    skipCurrentSpeech();   // the interrupted item is skipped, not resumed mid-sentence
+  }
+  // Cancelled while the hold request was in flight — don't open a permission prompt.
+  if (voiceStartStale(gen)) { if (gen === voiceGen) cancelVoiceRecording(true); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    if (gen !== voiceGen) return;   // a newer start/cancel owns the state now
+    voiceEarcon('error');
+    if (!voiceWindowMode) voiceToast('Mic access denied');
+    releaseVoiceHold();
+    voiceStarting = false;
+    voiceFrozenAgentId = null; voiceWindowMode = false;
+    return;
+  }
+  // Cancelled (pause / voice switched off) while the permission prompt was open:
+  // stop THIS call's stream — never the global one a newer start may own.
+  if (voiceStartStale(gen)) {
+    try { stream.getTracks().forEach(t => t.stop()); } catch {}
+    if (gen === voiceGen) cancelVoiceRecording(true);
+    return;
+  }
+  voiceStream = stream;
+  voiceChunks = [];
+  const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm'
+    : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+  try {
+    voiceRecorder = mime ? new MediaRecorder(voiceStream, { mimeType: mime })
+                         : new MediaRecorder(voiceStream);
+  } catch { voiceRecorder = new MediaRecorder(voiceStream); }
+  voiceRecorder.ondataavailable = (e) => { if (gen === voiceGen && e.data && e.data.size) voiceChunks.push(e.data); };
+  voiceRecorder.onstart = () => {
+    if (voiceStartStale(gen)) return;
+    voiceRecording = true;
+    voiceStarting = false;
+    voiceRecStart = performance.now();
+    // Hold TTS for the whole recording (any mode) so nothing plays into the mic.
+    if (!voiceHeldTts && voiceConfig.enabled) {
+      voiceHeldTts = true;
+      fetch('/api/voice/hold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hold: true }) }).catch(() => {});
+    }
+    voiceEarcon('listening');   // strictly after onstart so no first-word clip
+    startVad();                 // auto-endpoint on trailing silence
+    setMicButtonState();
+  };
+  voiceRecorder.onstop = () => { if (gen === voiceGen) finishVoiceRecording(); };
+  voiceRecorder.start();
+}
+
+function releaseVoiceStream() {
+  if (voiceStream) { try { voiceStream.getTracks().forEach(t => t.stop()); } catch {} voiceStream = null; }
+}
+
+function stopVoiceRecording() {
+  if (!voiceRecorder || voiceRecorder.state === 'inactive') return;
+  try { voiceRecorder.stop(); } catch {}
+}
+
+// Release the server-side TTS hold (idempotent) so the queue resumes.
+function releaseVoiceHold() {
+  if (!voiceHeldTts) return;
+  voiceHeldTts = false;
+  fetch('/api/voice/hold', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hold: false })
+  }).catch(() => {});
+}
+
+function cancelVoiceRecording(soft) {
+  stopVad();
+  // Invalidate the capture BEFORE stop(): stop() still delivers the buffered clip
+  // via ondataavailable and then fires onstop, which would otherwise upload it.
+  voiceGen++;
+  voiceChunks = [];
+  if (voiceRecorder) {
+    voiceRecorder.ondataavailable = null;
+    voiceRecorder.onstop = null;
+    if (voiceRecorder.state !== 'inactive') { try { voiceRecorder.stop(); } catch {} }
+  }
+  voiceRecording = false;
+  voiceStarting = false;
+  releaseVoiceStream();
+  releaseVoiceHold();
+  // soft = a reply-window that closed with nothing said — that's normal behavior,
+  // so it closes SILENTLY (beeping at every deliberate non-answer punishes the
+  // default). The audible 'cancelled' cue is for explicit user cancels only.
+  if (!soft) voiceEarcon('cancelled');
+  voiceFrozenAgentId = null; voiceWindowMode = false;
+  setMicButtonState();
+}
+
+async function finishVoiceRecording() {
+  const dur = performance.now() - voiceRecStart;
+  const frozen = voiceFrozenAgentId;
+  const wasWindow = voiceWindowMode;
+  voiceRecording = false;
+  voiceStarting = false;
+  stopVad();
+  releaseVoiceStream();
+  releaseVoiceHold();                       // mic is closed → TTS can resume
+  voiceFrozenAgentId = null; voiceWindowMode = false;
+  const chunks = voiceChunks; voiceChunks = [];
+  // Last line of defence: never upload once voice input is off or paused.
+  if (!voiceConfig.enabled || voicePaused) { setMicButtonState(); return; }
+  if (dur < VOICE_MIN_MS || !chunks.length) { setMicButtonState(); if (!wasWindow) voiceEarcon('tooShort'); return; }
+  const blob = new Blob(chunks, { type: (voiceRecorder && voiceRecorder.mimeType) || 'audio/webm' });
+  if (!blob.size) { setMicButtonState(); if (!wasWindow) voiceEarcon('tooShort'); return; }
+  // Mic is closed and the clip is good — say so IMMEDIATELY. Without this cue
+  // the user sits in silence through the whole STT round-trip not knowing if
+  // the mic is still open (and words spoken now are silently lost).
+  voiceEarcon('captured');
+  voiceTranscribing = true;
+  setMicButtonState();
+  try {
+    const url = '/api/voice/utterance' + (frozen ? ('?frozen=' + encodeURIComponent(frozen)) : '');
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type || 'audio/webm' },
+      body: blob
+    });
+    const j = await resp.json();
+    handleVoiceResult(j);
+  } catch (e) {
+    voiceEarcon('error');
+    voiceToast('Voice upload failed');
+  } finally {
+    voiceTranscribing = false;
+    setMicButtonState();
+  }
+}
+
+// Reply window: a reply just finished playing → open the mic for a hands-free
+// answer that routes back to that same session. No trigger word. Leader tab only.
+function openReplyWindow(agentId) {
+  if (!voiceAutoReply || !voiceConfig.enabled) return;
+  if (voiceRecording || voiceStarting) return;      // already listening / starting
+  if (typeof isAudioOwner === 'function' && !isAudioOwner()) return;   // only the TTS-leader tab
+  if (voicePaused) {
+    // Mic is paused — don't open the window. The server may have set its instant
+    // hold before our disarm landed (pause-mid-summary race); release it promptly
+    // rather than waiting for the safety timer, since no mic will use it.
+    fetch('/api/voice/hold', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hold: false })
+    }).catch(() => {});
+    return;
+  }
+  voiceHeldTts = true;                              // hold TTS while the mic is open
+  fetch('/api/voice/hold', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hold: true })
+  }).catch(() => {});
+  const info = (typeof getAgentById === 'function') ? getAgentById(agentId) : null;
+  const proj = (info && info.project) ? info.project : 'that session';
+  voiceToast(`Listening — answer ${proj}, or stay silent`);
+  startVoiceRecording({ frozen: agentId, windowMode: true, windowMs: Math.max(3000, (voiceReplyWindowSec || 10) * 1000) });
+}
+
+function handleVoiceResult(j) {
+  if (!j) return;
+  if (j.action === 'sent') { voiceEarcon('sent'); voiceToast(`→ ${j.target}: ${j.transcript}`); }
+  else if (j.action === 'queued') { voiceEarcon('sent'); voiceToast(`Queued for ${j.target}: ${j.transcript}`); }
+  else if (j.action === 'discarded') {
+    voiceEarcon(j.reason === 'no-target' || j.reason === 'ambiguous' ? 'error' : 'tooShort');
+    voiceToast(j.reason === 'no-target' ? 'No target session'
+      : j.reason === 'ambiguous' ? 'Ambiguous — say the project name'
+      : "Didn't catch that");
+  } else if (j.action === 'error') {
+    voiceEarcon('error');
+    voiceToast(j.error === 'dialog-blocked' ? `${j.target} needs a permission`
+      : j.error === 'no-openai-key' ? 'Voice input needs an OpenAI key — add it under Settings → Voice engine'
+      : `Voice error: ${j.error}`);
+  }
+}
+
+// Lightweight transient toast for voice routing feedback.
+let voiceToastTimer = null;
+function voiceToast(text) {
+  let el = document.getElementById('voice-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'voice-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.add('show');
+  if (voiceToastTimer) clearTimeout(voiceToastTimer);
+  voiceToastTimer = setTimeout(() => el.classList.remove('show'), 4200);
+}
+
+function toggleVoiceRecording() {
+  if (!voiceConfig.enabled) return;
+  if (voiceRecording) {
+    // During an auto-listen window, a click before you've said anything cancels
+    // it; once you've started speaking (or in manual mode) it sends.
+    if (voiceWindowMode && !voiceSpeechSeen) { stopVad(); cancelVoiceRecording(); }
+    else stopVoiceRecording();
+  } else {
+    startVoiceRecording();
+  }
+}
+
+// Tell the server whether "answer after each reply" is armed, so it can hold the
+// TTS queue synchronously the moment a reply finishes (avoids the race where the
+// next message starts playing before the client's hold request lands).
+let voiceAutoReplyRegistered = false;   // matches the server's boot state
+function registerAutoReply() {
+  const armed = !!(voiceConfig.enabled && voiceAutoReply && !voicePaused);
+  if (armed === voiceAutoReplyRegistered) return;   // no change
+  voiceAutoReplyRegistered = armed;
+  fetch('/api/voice/autoreply', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ armed })
+  }).catch(() => { voiceAutoReplyRegistered = !armed; });   // retry next change on failure
+}
+
+// Reflect server-pushed voice runtime state (injecting / pending).
+function applyVoiceState(msg) {
+  if (typeof msg.enabled === 'boolean') voiceConfig.enabled = msg.enabled;
+  if (msg.wakePhrase) voiceConfig.wakePhrase = msg.wakePhrase;
+  if (typeof msg.confirmSpoken === 'boolean') voiceConfig.confirmSpoken = msg.confirmSpoken;
+  voiceRuntime.injecting = Array.isArray(msg.injecting) ? msg.injecting : [];
+  voiceRuntime.pending = Array.isArray(msg.pending) ? msg.pending : [];
+  // Voice was switched off (here or in another tab) — close any open mic now.
+  if (!voiceConfig.enabled && (voiceRecording || voiceStarting)) cancelVoiceRecording(true);
+  registerAutoReply();
+  setMicButtonState();
+  updateVoiceSettingsUI();
+}
+
+async function fetchVoiceConfig() {
+  try {
+    const r = await fetch('/api/voice/config');
+    voiceConfig = { ...voiceConfig, ...(await r.json()) };
+  } catch {}
+  setMicButtonState();
+  updateVoiceSettingsUI();
+}
+
+function updateVoiceSettingsUI() {
+  const badge = document.getElementById('voice-input-badge');
+  if (badge) { badge.textContent = voiceConfig.enabled ? 'on' : 'off'; badge.classList.toggle('on', voiceConfig.enabled); }
+  const opt = document.getElementById('voice-enable-option');
+  if (opt) {
+    const mark = opt.querySelector('.check-mark');
+    if (mark) mark.innerHTML = voiceConfig.enabled ? SVG_CHECK_ON : SVG_CHECK_OFF;
+    opt.classList.toggle('selected', voiceConfig.enabled);
+  }
+  // Auto-send (client comfort pref)
+  const asOpt = document.getElementById('voice-autosend-option');
+  if (asOpt) {
+    const mark = asOpt.querySelector('.check-mark');
+    if (mark) mark.innerHTML = voiceAutoSend ? SVG_CHECK_ON : SVG_CHECK_OFF;
+    asOpt.classList.toggle('selected', voiceAutoSend);
+    asOpt.style.display = voiceConfig.enabled ? '' : 'none';   // only relevant when voice is on
+  }
+  const secSel = document.getElementById('voice-silence-sec');
+  if (secSel) secSel.value = String(voiceSilenceSec);
+  const secRow = document.getElementById('voice-silence-row');
+  if (secRow) secRow.style.display = (voiceConfig.enabled && voiceAutoSend) ? '' : 'none';
+  // Answer-after-reply (client comfort pref)
+  const arOpt = document.getElementById('voice-autoreply-option');
+  if (arOpt) {
+    const mark = arOpt.querySelector('.check-mark');
+    if (mark) mark.innerHTML = voiceAutoReply ? SVG_CHECK_ON : SVG_CHECK_OFF;
+    arOpt.classList.toggle('selected', voiceAutoReply);
+    arOpt.style.display = voiceConfig.enabled ? '' : 'none';
+  }
+  const rwSel = document.getElementById('voice-reply-window-sec');
+  if (rwSel) rwSel.value = String(voiceReplyWindowSec);
+  const rwRow = document.getElementById('voice-reply-window-row');
+  if (rwRow) rwRow.style.display = (voiceConfig.enabled && voiceAutoReply) ? '' : 'none';
+  // Spoken confirmation (server setting)
+  const cfOpt = document.getElementById('voice-confirm-option');
+  if (cfOpt) {
+    const mark = cfOpt.querySelector('.check-mark');
+    if (mark) mark.innerHTML = voiceConfig.confirmSpoken ? SVG_CHECK_ON : SVG_CHECK_OFF;
+    cfOpt.classList.toggle('selected', !!voiceConfig.confirmSpoken);
+    cfOpt.style.display = voiceConfig.enabled ? '' : 'none';
+  }
+  registerAutoReply();   // keep the server's armed flag in sync with the pref
+  const status = document.getElementById('voice-input-status');
+  if (status) {
+    const inj = voiceRuntime.injecting.length, pend = voiceRuntime.pending.length;
+    status.textContent = voiceConfig.enabled
+      ? `Wake phrase "${voiceConfig.wakePhrase}". ${inj} injecting, ${pend} queued.`
+      : 'Disabled — all voice endpoints reject.';
+  }
+}
+
+async function setVoiceEnabled(on) {
+  const prev = voiceConfig.enabled;
+  voiceConfig.enabled = !!on;          // optimistic — reflect the click immediately
+  if (!on && (voiceRecording || voiceStarting)) cancelVoiceRecording(true);   // close the mic locally, don't wait for the WS echo
+  setMicButtonState();
+  updateVoiceSettingsUI();
+  try {
+    const r = await fetch('/api/voice/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!on })
+    });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const j = await r.json();
+    if (j && j.settings) voiceConfig = { ...voiceConfig, ...j.settings };
+  } catch {
+    voiceConfig.enabled = prev;        // revert — the change didn't stick
+    if (!prev && (voiceRecording || voiceStarting)) cancelVoiceRecording(true);
+    voiceToast('Voice endpoints unavailable — restart the dashboard server to load the update.');
+  }
+  setMicButtonState();
+  updateVoiceSettingsUI();
+}
+
+function dismissVoiceStale(agentId) {
+  fetch(`/api/agent/${encodeURIComponent(agentId)}/voice-stale-dismiss`, { method: 'POST' }).catch(() => {});
+}
+// Event delegation for the dismiss button inside the detail panel.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('.voice-stale-dismiss');
+  if (btn) { e.stopPropagation(); dismissVoiceStale(btn.dataset.agentId); }
+});
+
+document.getElementById('voice-mic-btn')?.addEventListener('click', (e) => { e.stopPropagation(); toggleVoiceRecording(); });
+document.getElementById('voice-pause-btn')?.addEventListener('click', (e) => { e.stopPropagation(); toggleVoicePause(); });
+document.getElementById('voice-enable-option')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setVoiceEnabled(!voiceConfig.enabled);
+});
+document.getElementById('voice-autosend-option')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  voiceAutoSend = !voiceAutoSend;
+  saveVoicePrefs();
+  setMicButtonState();
+  updateVoiceSettingsUI();
+});
+document.getElementById('voice-silence-sec')?.addEventListener('change', (e) => {
+  const v = parseFloat(e.target.value);
+  if (!isNaN(v)) { voiceSilenceSec = v; saveVoicePrefs(); setMicButtonState(); }
+});
+document.getElementById('voice-autoreply-option')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  voiceAutoReply = !voiceAutoReply;
+  saveVoicePrefs();
+  updateVoiceSettingsUI();
+});
+document.getElementById('voice-reply-window-sec')?.addEventListener('change', (e) => {
+  const v = parseFloat(e.target.value);
+  if (!isNaN(v)) { voiceReplyWindowSec = v; saveVoicePrefs(); }
+});
+document.getElementById('voice-confirm-option')?.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const next = !voiceConfig.confirmSpoken;
+  voiceConfig.confirmSpoken = next;   // optimistic
+  updateVoiceSettingsUI();
+  try {
+    const r = await fetch('/api/voice/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmSpoken: next })
+    });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const j = await r.json();
+    if (j && j.settings) voiceConfig = { ...voiceConfig, ...j.settings };
+  } catch {
+    voiceConfig.confirmSpoken = !next;   // revert
+    voiceToast('Could not save — restart the dashboard server to load the update.');
+  }
+  updateVoiceSettingsUI();
+});
+document.getElementById('output-modal-mic')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleReplyToAgent(outputPopupAgentId);
+});
+fetchVoiceConfig();
+
 function updateStats() {
   let active = 0, idle = 0, offline = 0, awaiting = 0;
   const allIds = new Set([...agentRegistry.map(a => a.agentId), ...Object.keys(agentStates)]);
@@ -4136,7 +4974,19 @@ function connect() {
       renderTtsQueue();
       applyTtsAgentMarkers();
       syncAudioPlayback();
+      updateListenBtnState();                     // output popup Listen/Stop label
       if (selectedAgentId) renderAgentDetail();   // refresh "speaking now" line
+      return;
+    }
+
+    if (msg.type === 'voice') {
+      if (typeof applyVoiceState === 'function') applyVoiceState(msg);
+      return;
+    }
+
+    if (msg.type === 'voiceReplyDone') {
+      // A reply just finished playing — open the hands-free answer window.
+      if (typeof openReplyWindow === 'function' && msg.agentId) openReplyWindow(msg.agentId);
       return;
     }
 
@@ -4167,6 +5017,13 @@ function connect() {
 
       const oldState = agentStates[agentId] || { status: 'offline' };
       const oldStatus = oldState.status || 'offline';
+
+      // Voice-stale escalation just fired: the human typed into a TUI that never
+      // saw the injected voice turns. Surface it loudly (not a silent clear).
+      if (agent.voiceStaleEscalated && !oldState.voiceStaleEscalated) {
+        const proj = (getAgentById(agentId) || {}).project || 'a session';
+        if (typeof voiceToast === 'function') voiceToast(`⚠ ${proj}'s terminal replied without seeing your voice messages`);
+      }
 
       if (oldStatus !== agent.status || oldState.currentTool !== agent.currentTool) {
         addLogEntry(agentId, oldStatus, agent.status, agent.currentTool);
@@ -4287,6 +5144,9 @@ document.addEventListener('keydown', (e) => {
   const overlayOpen = document.getElementById('shortcuts-overlay').classList.contains('open');
 
   if (e.key === 'Escape') {
+    // An active dictation is the most urgent thing on screen — Escape aborts it
+    // without sending (false starts shouldn't cost a full wrong turn).
+    if (voiceRecording || voiceStarting) { cancelVoiceRecording(); return; }
     if (outputPopupOpen()) { closeOutputPopup(); return; }   // topmost reading surface first
     if (overlayOpen) { toggleShortcutsOverlay(); return; }
     if (document.getElementById('settings-modal')?.classList.contains('open')) { closeSettings(); return; }
@@ -4317,6 +5177,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 't') { cycleTheme(); return; }
   if (e.key === 'p') { togglePauseSpeech(); return; }
   if (e.key === 'm') { toggleMute(); return; }
+  if (e.key === 'v') { toggleVoicePause(); return; }
   if (e.key === 'l') { toggleSidebar(); return; }
   if (e.key === 'o') { if (selectedAgentId && formatFlags.show) openOutputPopup(); return; }
   if (e.key === 'r') {

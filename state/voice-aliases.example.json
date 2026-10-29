@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy this to state/voice-aliases.json (gitignored) and fill in YOUR project code names. Canonical namespace = cwd-derived registry project names (the folder basename shown on the dashboard), which is what the target resolver joins against. Keys are lowercased spoken forms as STT is likely to render them; values are the canonical project folder name. This static map is merged with the live registry names at resolve time.",
+  "my project": "my-project",
+  "the api": "backend-api",
+  "front end": "webapp"
+}
